@@ -19,6 +19,9 @@
 #ifdef ENABLE_AIRCOPY
 	#include "app/aircopy.h"
 #endif
+#ifdef ENABLE_SERIAL_BRIDGE
+	#include "app/serial_bridge.h"
+#endif
 #include "bsp/dp32g030/gpio.h"
 #include "driver/bk4819.h"
 #include "driver/keyboard.h"
@@ -106,6 +109,10 @@ void BOOT_ProcessMode(BOOT_Mode_t Mode)
 	#endif
 	else
 	{
+#ifdef ENABLE_SERIAL_BRIDGE
+		SERIAL_BRIDGE_Start();
+#else
 		GUI_SelectNextDisplay(DISPLAY_MAIN);
+#endif
 	}
 }

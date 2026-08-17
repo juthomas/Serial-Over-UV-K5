@@ -56,6 +56,9 @@ inline static void ACTION_1750() { ACTION_AlarmOr1750(true); };
 #ifdef ENABLE_SPECTRUM
 #include "app/spectrum.h"
 #endif
+#ifdef ENABLE_SERIAL_BRIDGE
+#include "app/serial_bridge.h"
+#endif
 
 inline static void ACTION_ScanRestart() { ACTION_Scan(true); };
 
@@ -109,6 +112,12 @@ void (*action_opt_table[])(void) = {
 	[ACTION_OPT_SPECTRUM] = &APP_RunSpectrum,
 #else
 	[ACTION_OPT_SPECTRUM] = &FUNCTION_NOP,
+#endif
+
+#ifdef ENABLE_SERIAL_BRIDGE
+	[ACTION_OPT_SERIAL_BRIDGE] = &SERIAL_BRIDGE_Start,
+#else
+	[ACTION_OPT_SERIAL_BRIDGE] = &FUNCTION_NOP,
 #endif
 };
 

@@ -24,6 +24,9 @@
 	#include "app/fm.h"
 #endif
 
+#ifdef ENABLE_SERIAL_BRIDGE
+	#include "app/serial_bridge.h"
+#endif
 #include "app/generic.h"
 #include "app/menu.h"
 #include "app/scanner.h"
@@ -99,6 +102,15 @@ void GENERIC_Key_F(bool bKeyPressed, bool bKeyHeld)
 void GENERIC_Key_PTT(bool bKeyPressed)
 {
 	gInputBoxIndex = 0;
+
+#ifdef ENABLE_SERIAL_BRIDGE
+	/* Analog voice TX next to a USB-serial cable sprays RF into the laptop. */
+	if (SERIAL_BRIDGE_BlockAnalogPtt()) {
+		if (gCurrentFunction == FUNCTION_TRANSMIT)
+			APP_EndTransmission();
+		return;
+	}
+#endif
 
 	if (!bKeyPressed || SerialConfigInProgress())
 	{	// PTT released

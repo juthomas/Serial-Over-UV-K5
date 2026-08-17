@@ -1,5 +1,15 @@
 # Open re-implementation of the Quansheng UV-K5/K6/5R v2.1.27 firmware
 
+## Serial Bridge (this fork)
+
+This tree adds an **UART ↔ FSK RF serial tunnel** between two UV-K5 radios
+(`ENABLE_SERIAL_BRIDGE`). The radio **boots into SER BRIDGE** (EXIT returns to
+the normal VFO). See **[docs/SERIAL_BRIDGE.md](docs/SERIAL_BRIDGE.md)**
+for build, flash, usage, and legal notes. Prebuilt binaries (when built) live in
+`compiled-firmware/`.
+
+---
+
 This repository is a merge of [OneOfEleven custom firmware](https://github.com/OneOfEleven/uv-k5-firmware-custom) with [fagci spectrum analizer](https://github.com/fagci/uv-k5-firmware-fagci-mod/tree/refactor) plus my few changes.<br>
 All is a cloned and customized version of DualTachyon's open firmware found [here](https://github.com/DualTachyon/uv-k5-firmware) ... a cool achievement !
 

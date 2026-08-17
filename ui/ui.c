@@ -27,6 +27,9 @@
 #ifdef ENABLE_AIRCOPY
 	#include "ui/aircopy.h"
 #endif
+#ifdef ENABLE_SERIAL_BRIDGE
+	#include "ui/serial_bridge.h"
+#endif
 #ifdef ENABLE_FMRADIO
 	#include "ui/fmradio.h"
 #endif
@@ -56,6 +59,10 @@ void (*UI_DisplayFunctions[])(void) = {
 
 #ifdef ENABLE_AIRCOPY
 	[DISPLAY_AIRCOPY] = &UI_DisplayAircopy,
+#endif
+
+#ifdef ENABLE_SERIAL_BRIDGE
+	[DISPLAY_SERIAL_BRIDGE] = &UI_DisplaySerialBridge,
 #endif
 };
 

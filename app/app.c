@@ -24,6 +24,9 @@
 #ifdef ENABLE_AIRCOPY
 	#include "app/aircopy.h"
 #endif
+#ifdef ENABLE_SERIAL_BRIDGE
+	#include "app/serial_bridge.h"
+#endif
 #include "app/app.h"
 #include "app/chFrScanner.h"
 #include "app/dtmf.h"
@@ -90,6 +93,10 @@ void (*ProcessKeysFunctions[])(KEY_Code_t Key, bool bKeyPressed, bool bKeyHeld) 
 
 #ifdef ENABLE_AIRCOPY
 	[DISPLAY_AIRCOPY] = &AIRCOPY_ProcessKeys,
+#endif
+
+#ifdef ENABLE_SERIAL_BRIDGE
+	[DISPLAY_SERIAL_BRIDGE] = &SERIAL_BRIDGE_ProcessKeys,
 #endif
 };
 
@@ -703,6 +710,24 @@ static void CheckRadioInterrupts(void)
 			AIRCOPY_StorePacket();
 		}
 #endif
+
+#ifdef ENABLE_SERIAL_BRIDGE
+		if (interrupts.fskFifoAlmostFull &&
+			gScreenToDisplay == DISPLAY_SERIAL_BRIDGE)
+		{
+			if (gSerialBridgeBusyTx) {
+				for (unsigned int i = 0; i < 4; i++)
+					(void)BK4819_ReadRegister(BK4819_REG_5F);
+				gFSKWriteIndex = 0;
+			} else {
+				for (unsigned int i = 0; i < 4; i++) {
+					gSerialBridgeFSKBuffer[gFSKWriteIndex++] = BK4819_ReadRegister(BK4819_REG_5F);
+				}
+
+				SERIAL_BRIDGE_StorePacket();
+			}
+		}
+#endif
 	}
 }
 
@@ -991,9 +1016,17 @@ static void CheckKeys(void)
 // -------------------- PTT ------------------------
 	if (gPttIsPressed)
 	{
-		if (GPIO_CheckBit(&GPIOC->DATA, GPIOC_PIN_PTT) || SerialConfigInProgress())
+		if (GPIO_CheckBit(&GPIOC->DATA, GPIOC_PIN_PTT) || SerialConfigInProgress()
+#ifdef ENABLE_SERIAL_BRIDGE
+			|| SERIAL_BRIDGE_BlockAnalogPtt()
+#endif
+		)
 		{	// PTT released or serial comms config in progress
-			if (++gPttDebounceCounter >= 3 || SerialConfigInProgress())	    // 30ms
+			if (++gPttDebounceCounter >= 3 || SerialConfigInProgress()
+#ifdef ENABLE_SERIAL_BRIDGE
+				|| SERIAL_BRIDGE_BlockAnalogPtt()
+#endif
+			)	    // 30ms
 			{	// stop transmitting
 				ProcessKey(KEY_PTT, false, false);
 				gPttIsPressed = false;
@@ -1004,7 +1037,11 @@ static void CheckKeys(void)
 		else
 			gPttDebounceCounter = 0;
 	}
-	else if (!GPIO_CheckBit(&GPIOC->DATA, GPIOC_PIN_PTT) && !SerialConfigInProgress())
+	else if (!GPIO_CheckBit(&GPIOC->DATA, GPIOC_PIN_PTT) && !SerialConfigInProgress()
+#ifdef ENABLE_SERIAL_BRIDGE
+		&& !SERIAL_BRIDGE_BlockAnalogPtt()
+#endif
+	)
 	{	// PTT pressed
 		if (++gPttDebounceCounter >= 3)	    // 30ms
 		{	// start transmitting
@@ -1103,7 +1140,12 @@ void APP_TimeSlice10ms(void)
 #endif
 
 #ifdef ENABLE_UART
-	if (UART_IsCommandAvailable()) {
+#ifdef ENABLE_SERIAL_BRIDGE
+	if (SERIAL_BRIDGE_IsActive()) {
+		/* Chirp/programming protocol suspended while bridging */
+	} else
+#endif
+	if (!gPttIsPressed && UART_IsCommandAvailable()) {
 		__disable_irq();
 		UART_HandleCommand();
 		__enable_irq();
@@ -1229,6 +1271,11 @@ void APP_TimeSlice10ms(void)
 			GUI_DisplayScreen();
 		}
 	}
+#endif
+
+#ifdef ENABLE_SERIAL_BRIDGE
+	if (SERIAL_BRIDGE_IsActive())
+		SERIAL_BRIDGE_TimeSlice10ms();
 #endif
 
 	CheckKeys();
@@ -1751,6 +1798,9 @@ static void ProcessKey(KEY_Code_t Key, bool bKeyPressed, bool bKeyHeld)
 	else if (!SCANNER_IsScanning()
 #ifdef ENABLE_AIRCOPY
 			&& gScreenToDisplay != DISPLAY_AIRCOPY
+#endif
+#ifdef ENABLE_SERIAL_BRIDGE
+			&& gScreenToDisplay != DISPLAY_SERIAL_BRIDGE
 #endif
 	) {
 		ACTION_Handle(Key, bKeyPressed, bKeyHeld);

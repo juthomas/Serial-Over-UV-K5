@@ -6,14 +6,14 @@
 # ---- STOCK QUANSHENG FERATURES ----
 ENABLE_UART                   ?= 1
 ENABLE_AIRCOPY                ?= 0
-ENABLE_FMRADIO                ?= 1
+ENABLE_FMRADIO                ?= 0
 ENABLE_NOAA                   ?= 0
 ENABLE_VOICE                  ?= 0
-ENABLE_VOX                    ?= 1
+ENABLE_VOX                    ?= 0
 ENABLE_ALARM                  ?= 0
 ENABLE_TX1750                 ?= 0
 ENABLE_PWRON_PASSWORD         ?= 0
-ENABLE_DTMF_CALLING           ?= 1
+ENABLE_DTMF_CALLING           ?= 0
 ENABLE_FLASHLIGHT             ?= 1
 
 # ---- CUSTOM MODS ----
@@ -33,13 +33,15 @@ ENABLE_AM_FIX                 ?= 1
 ENABLE_SQUELCH_MORE_SENSITIVE ?= 1
 ENABLE_FASTER_CHANNEL_SCAN    ?= 1
 ENABLE_RSSI_BAR               ?= 1
-ENABLE_AUDIO_BAR              ?= 1
+ENABLE_AUDIO_BAR              ?= 0
 ENABLE_COPY_CHAN_TO_VFO       ?= 1
-ENABLE_SPECTRUM               ?= 1
+ENABLE_SPECTRUM               ?= 0
 ENABLE_REDUCE_LOW_MID_TX_POWER?= 0
 ENABLE_BYP_RAW_DEMODULATORS   ?= 0
 ENABLE_BLMIN_TMP_OFF          ?= 0
 ENABLE_SCAN_RANGES            ?= 1
+ENABLE_SERIAL_BRIDGE          ?= 1
+ENABLE_ANALOG_PTT             ?= 0
 
 # ---- DEBUGGING ----
 ENABLE_AM_FIX_SHOW_DATA       ?= 0
@@ -89,7 +91,7 @@ ifeq ($(ENABLE_FMRADIO),1)
 	OBJS += driver/bk1080.o
 endif
 OBJS += driver/bk4819.o
-ifeq ($(filter $(ENABLE_AIRCOPY) $(ENABLE_UART),1),1)
+ifeq ($(filter $(ENABLE_AIRCOPY) $(ENABLE_UART) $(ENABLE_SERIAL_BRIDGE),1),1)
 	OBJS += driver/crc.o
 endif
 OBJS += driver/eeprom.o
@@ -111,6 +113,9 @@ endif
 OBJS += app/action.o
 ifeq ($(ENABLE_AIRCOPY),1)
 	OBJS += app/aircopy.o
+endif
+ifeq ($(ENABLE_SERIAL_BRIDGE),1)
+	OBJS += app/serial_bridge.o
 endif
 OBJS += app/app.o
 OBJS += app/chFrScanner.o
@@ -151,6 +156,9 @@ OBJS += settings.o
 ifeq ($(ENABLE_AIRCOPY),1)
 	OBJS += ui/aircopy.o
 endif
+ifeq ($(ENABLE_SERIAL_BRIDGE),1)
+	OBJS += ui/serial_bridge.o
+endif
 OBJS += ui/battery.o
 ifeq ($(ENABLE_FMRADIO),1)
 	OBJS += ui/fmradio.o
@@ -183,11 +191,20 @@ else # unix
     NULL_OUTPUT = /dev/null
 endif
 
-AS = arm-none-eabi-gcc
-LD = arm-none-eabi-gcc
+# Prefer local ARM GNU toolchain if present (official tarball under .toolchain/)
+export PATH := $(TOP)/.toolchain/bin:$(PATH)
+
+ifeq ($(wildcard $(TOP)/.toolchain/bin/arm-none-eabi-gcc),)
+  ARM_GCC_PREFIX :=
+else
+  ARM_GCC_PREFIX := $(TOP)/.toolchain/bin/
+endif
+
+AS = $(ARM_GCC_PREFIX)arm-none-eabi-gcc
+LD = $(ARM_GCC_PREFIX)arm-none-eabi-gcc
 
 ifeq ($(ENABLE_CLANG),0)
-	CC = arm-none-eabi-gcc
+	CC = $(ARM_GCC_PREFIX)arm-none-eabi-gcc
 # Use GCC's linker to avoid undefined symbol errors
 #	LD += arm-none-eabi-gcc
 else
@@ -197,8 +214,8 @@ else
 #	LD = ld.lld
 endif
 
-OBJCOPY = arm-none-eabi-objcopy
-SIZE = arm-none-eabi-size
+OBJCOPY = $(ARM_GCC_PREFIX)arm-none-eabi-objcopy
+SIZE = $(ARM_GCC_PREFIX)arm-none-eabi-size
 
 AUTHOR_STRING ?= EGZUMER
 # the user might not have/want git installed
@@ -262,6 +279,12 @@ ifeq ($(ENABLE_OVERLAY),1)
 endif
 ifeq ($(ENABLE_AIRCOPY),1)
 	CFLAGS += -DENABLE_AIRCOPY
+endif
+ifeq ($(ENABLE_SERIAL_BRIDGE),1)
+	CFLAGS += -DENABLE_SERIAL_BRIDGE
+endif
+ifeq ($(ENABLE_ANALOG_PTT),1)
+	CFLAGS += -DENABLE_ANALOG_PTT
 endif
 ifeq ($(ENABLE_FMRADIO),1)
 	CFLAGS += -DENABLE_FMRADIO
@@ -401,10 +424,12 @@ DEPS = $(OBJS:.o=.d)
 
 
 
-ifneq (, $(shell $(WHERE) python))
-    MY_PYTHON := python
+ifneq ($(wildcard $(TOP)/.venv/bin/python),)
+    MY_PYTHON := $(TOP)/.venv/bin/python
 else ifneq (, $(shell $(WHERE) python3))
     MY_PYTHON := python3
+else ifneq (, $(shell $(WHERE) python))
+    MY_PYTHON := python
 endif
 
 ifdef MY_PYTHON
