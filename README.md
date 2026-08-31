@@ -2,16 +2,18 @@
 
 ## Serial Bridge (this fork)
 
-This tree adds an **UART ↔ FSK RF serial tunnel** between two UV-K5 radios
-(`ENABLE_SERIAL_BRIDGE`). The radio **boots into SER BRIDGE** (EXIT returns to
-the normal VFO). See **[docs/SERIAL_BRIDGE.md](docs/SERIAL_BRIDGE.md)**
-for build, flash, usage, and legal notes.
+This tree adds an **UART ↔ FSK / DTMF RF serial tunnel** between two UV-K5
+radios (`ENABLE_SERIAL_BRIDGE`). The radio **boots into SER FSK** (`*`
+toggles DTMF; EXIT returns to the normal VFO). See
+**[docs/SERIAL_BRIDGE.md](docs/SERIAL_BRIDGE.md)** for build, flash, usage,
+and legal notes.
 
 - **V1** (UV-K5 88, DP32G030): `make` / `make v1` → `compiled-firmware/firmware-v1.packed.bin` → [uvtools](https://egzumer.github.io/uvtools/)
 - **V3** (UV-K5 8, PY32F071): `make v3` → `compiled-firmware/firmware-v3.bin` → [uvtools2](https://armel.github.io/uvtools2/)
 
 Do **not** flash a V1 packed binary with uvtools2 (black screen on V3). The
-air frame is the same, so V1 and V3 radios can talk to each other.
+air frames are the same, so V1 and V3 radios can talk if they use the same
+mode (both FSK, or both DTMF).
 
 ---
 

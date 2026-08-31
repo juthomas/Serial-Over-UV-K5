@@ -1,10 +1,13 @@
 # UV-K5 Serial Bridge
 
 Tunnel série transparent entre deux PC via deux Quansheng UV-K5, sur la
-fréquence VFO courante, en FSK ~1200 baud (modem interne BK4819).
+fréquence VFO courante. Deux modes air (même écran, touche `*` pour basculer) :
+
+- **FSK** ~1200 baud (modem interne BK4819) — rapide, sonne comme un hash digital
+- **DTMF** lent (~2–3 o/s) — tons clavier téléphone, audible sur un talkie analogique
 
 ```
-PC1  --USB/UART 38400-->  UV-K5 A  --FSK RF-->  UV-K5 B  --USB/UART-->  PC2
+PC1  --USB/UART 38400-->  UV-K5 A  --FSK ou DTMF RF-->  UV-K5 B  --USB/UART-->  PC2
 ```
 
 Base : firmware communautaire [egzumer](https://github.com/egzumer/uv-k5-firmware-custom)
@@ -27,7 +30,7 @@ avec le flag `ENABLE_SERIAL_BRIDGE`.
 - Antennes adaptées ; idéalement tests à faible puissance et courte distance
 
 Le câble de programmation parle **UART au MCU** (pas l’audio). Aucun AIOC
-n’est requis : le FSK est généré dans le BK4819.
+n’est requis : FSK et DTMF sont générés dans le BK4819.
 
 ## Radios V1 vs V3 (flash)
 
@@ -41,8 +44,9 @@ binaire V3 à uvtools. C’est ce qui laisse l’écran noir sur un UV-K5(8).
 
 `make` sans argument reste **V1**. `make all-hw` construit les deux.
 
-La trame FSK air est **identique** (`0xABCD` / seq+len / CRC / `0xDCBA`) : un
-V1 et un V3 peuvent se parler.
+Les trames air FSK et DTMF sont **identiques** entre V1 et V3 : un V1 et un
+V3 peuvent se parler **s’ils sont sur le même mode** (les deux FSK, ou les
+deux DTMF).
 
 Le V3 (bootloader `7.00.07`) se récupère avec un firmware F4HWN Fusion V3
 (ex. `f4hwn.fusion.v5.7.0.bin`) via uvtools2 si l’écran reste noir.
@@ -76,7 +80,8 @@ Flags utiles (déjà réglés par défaut dans ce fork) :
 
 | Flag | Défaut | Rôle |
 |------|--------|------|
-| `ENABLE_SERIAL_BRIDGE` | 1 | Mode tunnel FSK |
+| `ENABLE_SERIAL_BRIDGE` | 1 | Mode tunnel FSK / DTMF |
+| `SERIAL_BRIDGE_DEFAULT_MODE` | 0 (FSK) | Mode au boot (`1` = DTMF) |
 | `ENABLE_ANALOG_PTT` | 0 | PTT vocal aussi hors du bridge (off = VFO principal USB-safe) |
 | `ENABLE_UART` | 1 | Câble prog + bridge |
 | `ENABLE_SPECTRUM` / `FMRADIO` / `VOX` / `DTMF_CALLING` | 0 | Désactivés pour libérer de la flash |
@@ -95,39 +100,46 @@ Taille typique : ~48 Ko de code (budget flash ~60 Ko utilisables).
      [uvtools2](https://armel.github.io/uvtools2/).
 5. Relâcher / redémarrer normalement.
 
-Répéter sur **les deux** radios (même fréquence, même trame air).
+Répéter sur **les deux** radios (même fréquence, **même mode** FSK ou DTMF).
 
 ## Activation du mode Serial Bridge
 
-Le firmware **démarre directement** sur l’écran `SER BRIDGE` (après l’écran
+Le firmware **démarre directement** sur l’écran `SER FSK` (après l’écran
 d’accueil), tuné sur **433.000 MHz**. **EXIT** quitte le mode et revient à la
-radio normale ; le prochain allumage relance le bridge (à nouveau sur 433.000).
+radio normale ; le prochain allumage relance le bridge (à nouveau sur 433.000,
+mode FSK par défaut).
 
 Pour y revenir sans redémarrer : Menu → `F1Shrt` / `F1Long` / `F2Shrt` /
 `F2Long` / `M Long` → assigner **`SER BRIDGE`** à une touche latérale, puis
 appuyer sur cette touche.
 
-Sur l’écran `SER BRIDGE` :
+Sur l’écran `SER FSK` / `SER DTMF` :
 
 1. Taper la fréquence (6 chiffres, ex. `433000` → 433.000 MHz) ou **UP/DOWN**
    pour stepper. **EXIT** efface un chiffre, ou quitte le mode si rien n’est
    en saisie.
-2. **PTT** = TX vocal analogique FM (comme un talkie). Relâcher pour revenir
+2. **`*`** bascule FSK ↔ DTMF (les deux radios doivent matcher). Le titre
+   affiche le mode courant ; le footer `*=DTMF` / `*=FSK` indique l’autre.
+3. **PTT** = TX vocal analogique FM (comme un talkie). Relâcher pour revenir
    en écoute.
-3. **XOR FSK / analogique** : au repos le modem FSK écoute (HP fermé). Pendant
+4. **XOR data / analogique** : au repos le modem écoute (HP fermé). Pendant
    une QSO analogique (`StartListening` / PTT) le FSK est coupé ; le HP n’est
-   ouvert/fermé que par le firmware stock. Fin de QSO → réarmement FSK.
+   ouvert/fermé que par le firmware stock. En DTMF, une rafale de données
+   n’ouvre pas le HP (un talkie *tiers* entend les tons). Fin de QSO →
+   réarmement du modem.
 
-Les deux radios doivent être sur **la même fréquence**. CTCSS/DCS off, bande
-passante identique, puissance adaptée (LOW pour les essais).
+Les deux radios doivent être sur **la même fréquence** et **le même mode**.
+CTCSS/DCS off, bande passante identique, puissance adaptée (LOW pour les
+essais).
 
 Pendant le bridge :
 
 - Le protocole Chirp/programmation UART est **suspendu**.
-- Voix analogique et tunnel FSK partagent le même canal (half-duplex) :
-  pendant un paquet FSK le PTT attend ; pendant le PTT l’UART est bufferisé.
-- Les rafales FSK s’entendent comme un modem. Pendant une QSO analogique le
-  FSK est coupé : plus de faux `E:` CRC dus au bruit FM.
+- Voix analogique et tunnel data partagent le même canal (half-duplex) :
+  pendant une rafale le PTT attend ; pendant le PTT l’UART est bufferisé.
+- Les rafales **FSK** s’entendent comme un modem / bruit blanc. Les rafales
+  **DTMF** s’entendent comme un clavier téléphone. Pendant une QSO analogique
+  le modem data est coupé : plus de faux `E:` CRC dus au bruit FM.
 - Hors de cet écran, le PTT analogique reste coupé si `ENABLE_ANALOG_PTT=0`
   (protection USB/Mac). Recompiler avec `make ENABLE_ANALOG_PTT=1` pour le
   réactiver aussi sur le VFO principal.
@@ -239,7 +251,8 @@ python tools/serial_bridge_pc.py terminal /dev/cu.usbserial-B
 **PC émetteur** (autre terminal) :
 
 ```bash
-# ~400 octets générés, envoyés 56 o toutes les 1 s (~56 o/s)
+# FSK : ~400 octets, cadencés par XON/XOFF (~50–70 o/s)
+# DTMF : même commande, beaucoup plus lent (~2–3 o/s) — le radio XOFF tout seul
 python tools/serial_bridge_pc.py send /dev/cu.usbserial-A --bytes 400
 
 # ou un fichier / un paragraphe
@@ -247,19 +260,27 @@ python tools/serial_bridge_pc.py send /dev/cu.usbserial-A --file message.txt
 python tools/serial_bridge_pc.py send /dev/cu.usbserial-A --text "Votre long texte ici…"
 ```
 
-Ne pas coller un roman dans `terminal` d’un coup : le buffer UART de la radio
-fait 128 octets, le FSK ~56 octets/trame. `send` cadence tout seul.
+`terminal` et `send` cadencent via XON/XOFF (le firmware envoie XOFF avant
+chaque rafale). En FSK, 56 o / ~1 s. En DTMF, 8 o / ~2–3 s : coller un roman
+prendra plusieurs minutes. `--pause` plus long si un vieux firmware n’envoie
+pas de XON.
 
 Sur l’écran radio A : compteur `TX` qui monte. Sur B : `RX`, et le texte sort
-sur le PC B. Durée typique : 400 octets ≈ 7–8 s.
+sur le PC B. Durée typique FSK : 400 octets ≈ 7–8 s. DTMF : 400 octets ≈
+2–3 min.
 
 ### Test recommandé
 
-1. Deux radios en bridge, antennes proches, LOW power, fréquence légale.
-2. `serial_bridge_pc.py test PORT_A PORT_B`
+1. Deux radios en bridge, **même mode** (`*` → les deux `SER FSK` ou les deux
+   `SER DTMF`), antennes proches, LOW power, fréquence légale, CTCSS off.
+2. `serial_bridge_pc.py test PORT_A PORT_B` (timeout 20 s, OK FSK et DTMF).
 3. Vérifier les compteurs `TX`/`RX` à l’écran et `E:` (erreurs CRC) proche de 0.
+4. Talkie analogique sur la même fréquence : FSK = hash ; DTMF = clavier
+   téléphone.
 
 ## Protocole air (V1 et V3)
+
+### FSK
 
 Trame FSK fixe 72 octets (comme Air Copy), 1200 baud :
 
@@ -271,27 +292,49 @@ Trame FSK fixe 72 octets (comme Air Copy), 1200 baud :
 | CRC16-CCITT | sur 66 octets (mot `[1]` + 64 octets zone payload) |
 | sync fin | `0xDCBA` |
 
-- Half-duplex, **sans ACK** (best-effort). Les doublons de `seq` sont ignorés.
+- Half-duplex, **sans ACK air** (best-effort). Les doublons de `seq` sont ignorés.
 - CSMA simple : pas de TX si le squelch est ouvert (canal occupé).
 - Flush UART → RF après ~30 ms d’inactivité ou buffer plein (56 B).
+- Câble : XON/XOFF (firmware) pour que le PC n’inonde pas le buffer UART.
 
-Débit utile typique : **~500–900 octets/s** selon conditions (pas un câble USB).
+Débit utile typique FSK : **~50–70 octets/s** (56 o / trame + mute TX).
+
+### DTMF
+
+Trame de nibbles (symbole DTMF = 4 bits : `0-9 A-D * #`) :
+
+| Champ | Symboles |
+|-------|----------|
+| sync | `*` `*` |
+| LEN | 1 nibble, payload 1..8 octets |
+| SEQ | 1 nibble (0..15), anti-doublon |
+| DATA | 2×LEN nibbles (high puis low) |
+| CRC8 | 2 nibbles, poly 0x07 sur LEN + SEQ + DATA |
+
+- Ton 80 ms + silence 80 ms (~6,25 symboles/s) → **~2–3 octets/s** en rafale.
+- Flush UART après 8 octets ou ~80 ms d’inactivité.
+- Half-duplex, sans ACK, CSMA squelch, comme le FSK.
+- Un talkie stock n’affiche rien : il entend seulement les tons.
 
 ## Limites
 
 - Half-duplex uniquement (pas de full-duplex simultané) : PTT analogique et
-  TX FSK ne peuvent pas coexister.
+  TX data ne peuvent pas coexister.
+- Un mix FSK↔DTMF (une radio de chaque) = silence ou `E:` (pas de crash).
+- La voix peut déclencher de faux symboles DTMF : sync `**` + CRC8 les
+  rejettent (`E:` peut bouger un peu pendant une QSO).
 - En n’émettant que d’un côté, le terminal peut voir du bruit USB/UART pendant
   le TX FSK (CH340 : `\xff`, PL2303 : `\x00`). Ce n’est **pas** un message
   reçu. L’outil `terminal` les ignore. Inoffensif.
 - Pertes possibles sans retransmission.
 - Pas de TCP/IP, VPN, ni chiffrement.
 - Chirp inutilisable pendant le bridge.
-- Le FSK BK4819 n’est pas un modem haute vitesse.
+- Le FSK BK4819 n’est pas un modem haute vitesse. Le DTMF est volontairement
+  lent pour rester musical.
 
 ## Fichiers principaux
 
-- [`app/serial_bridge.c`](../app/serial_bridge.c) — state machine UART ↔ FSK (V1)
+- [`app/serial_bridge.c`](../app/serial_bridge.c) — state machine UART ↔ FSK/DTMF (V1)
 - [`ui/serial_bridge.c`](../ui/serial_bridge.c) — écran (V1)
 - [`v3-overlay/App/app/serial_bridge.c`](../v3-overlay/App/app/serial_bridge.c) — port PY32 (V3)
 - [`patches/v3-serial-bridge.patch`](../patches/v3-serial-bridge.patch) — hooks F4HWN V3

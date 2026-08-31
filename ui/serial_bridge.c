@@ -17,7 +17,7 @@ void UI_DisplaySerialBridge(void)
 
 	UI_DisplayClear();
 
-	UI_PrintString("SER BRIDGE", 2, 127, 0, 8);
+	UI_PrintString(SERIAL_BRIDGE_IsDtmf() ? "SER DTMF" : "SER FSK", 2, 127, 0, 8);
 
 	if (gInputBoxIndex == 0) {
 		uint32_t frequency = gTxVfo->freq_config_RX.Frequency;
@@ -37,7 +37,8 @@ void UI_DisplaySerialBridge(void)
 		sprintf(String, "RX %u B:%u", gSerialBridgeRxPackets, gSerialBridgeRxBytes);
 	UI_PrintStringSmallNormal(String, 2, 127, 4);
 
-	sprintf(String, "E:%u PTT=TX EXIT", gSerialBridgeRxErrors);
+	sprintf(String, "E:%u *=%s PTT", gSerialBridgeRxErrors,
+		SERIAL_BRIDGE_IsDtmf() ? "FSK" : "DTMF");
 	UI_PrintStringSmallNormal(String, 2, 127, 5);
 
 	ST7565_BlitFullScreen();

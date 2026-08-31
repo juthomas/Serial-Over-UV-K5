@@ -431,9 +431,17 @@ void APP_StartListening(FUNCTION_Type_t function)
 	const unsigned int vfo = gEeprom.RX_VFO;
 
 #ifdef ENABLE_SERIAL_BRIDGE
-	/* Analog QSO: FSK modem off, speaker owned by stock StartListening. */
-	if (SERIAL_BRIDGE_IsActive())
+	/* Analog QSO: data modem off, speaker owned by stock StartListening.
+	 * Incoming DTMF data must not be treated as voice (HP stays closed). */
+	if (SERIAL_BRIDGE_IsActive()) {
+		if (SERIAL_BRIDGE_HoldDataRx()) {
+			AUDIO_AudioPathOff();
+			gEnableSpeaker = false;
+			FUNCTION_Select(function);
+			return;
+		}
 		SERIAL_BRIDGE_EnterAnalogRx();
+	}
 #endif
 
 #ifdef ENABLE_DTMF_CALLING
@@ -626,6 +634,10 @@ static void CheckRadioInterrupts(void)
 		if (interrupts.dtmf5ToneFound) {	
 			const char c = DTMF_GetCharacter(BK4819_GetDTMF_5TONE_Code()); // save the RX'ed DTMF character
 			if (c != 0xff) {
+#ifdef ENABLE_SERIAL_BRIDGE
+				if (SERIAL_BRIDGE_IsActive())
+					SERIAL_BRIDGE_OnDtmf(c);
+#endif
 				if (gCurrentFunction != FUNCTION_TRANSMIT) {
 					if (gSetting_live_DTMF_decoder) {
 						size_t len = strlen(gDTMF_RX_live);
@@ -731,7 +743,8 @@ static void CheckRadioInterrupts(void)
 		if (interrupts.fskFifoAlmostFull &&
 			gScreenToDisplay == DISPLAY_SERIAL_BRIDGE &&
 			gCurrentFunction != FUNCTION_TRANSMIT &&
-			!gPttIsPressed)
+			!gPttIsPressed &&
+			!SERIAL_BRIDGE_IsDtmf())
 		{
 			if (g_SquelchLost || SERIAL_BRIDGE_IsAnalogRx() || gSerialBridgeBusyTx) {
 				for (unsigned int i = 0; i < 4; i++)

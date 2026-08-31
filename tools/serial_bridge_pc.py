@@ -3,8 +3,9 @@
 UV-K5 Serial Bridge PC tool
 
 Talks to a radio running the Serial Bridge firmware over the programming
-cable (UART ~38400 8N1). While the radio is in SER BRIDGE mode, raw bytes
-written here are sent over FSK RF and appear on the peer radio's UART.
+cable (UART ~38400 8N1). While the radio is in SER FSK / SER DTMF mode,
+raw bytes written here are sent over RF (FSK or DTMF) and appear on the
+peer radio's UART. Both radios must use the same air mode (* on the HT).
 
 Examples:
   python serial_bridge_pc.py list
@@ -31,6 +32,16 @@ except ImportError:
     sys.exit(1)
 
 DEFAULT_BAUD = 38400
+# FSK frame is 56 payload bytes (~1 s). DTMF frame is 8 bytes (~2–3 s);
+# the radio XOFFs so these defaults still work (raise --timeout / --pause).
+DEFAULT_CHUNK = 56
+DEFAULT_PAUSE = 1.0
+DEFAULT_TEST_TIMEOUT = 20.0
+XON = 0x11
+XOFF = 0x13
+# FSK TX EMI on the programming cable: CH340 → 0xFF, PL2303 → 0x00.
+_IDLE_NOISE = frozenset((0x00, 0xFF))
+_FLOW = frozenset((XON, XOFF))
 
 
 def open_port(path: str, baud: int = DEFAULT_BAUD) -> serial.Serial:
@@ -64,23 +75,102 @@ def open_port(path: str, baud: int = DEFAULT_BAUD) -> serial.Serial:
     return ser
 
 
-# FSK TX EMI on the programming cable: CH340 → 0xFF, PL2303 → 0x00.
-_IDLE_NOISE = frozenset((0x00, 0xFF))
+class UartCredit:
+    """Software flow control. New firmware sends XON/XOFF; old firmware times out."""
+
+    def __init__(self) -> None:
+        self._can_send = threading.Event()
+        self._can_send.set()
+
+    def feed(self, data: bytes) -> bytes:
+        out = bytearray()
+        for b in data:
+            if b == XOFF:
+                self._can_send.clear()
+            elif b == XON:
+                self._can_send.set()
+            else:
+                out.append(b)
+        return bytes(out)
+
+    def wait_ready(self, timeout: float) -> None:
+        if not self._can_send.wait(timeout):
+            # No XON (stock firmware): the pause itself is the pacing.
+            self._can_send.set()
+
+    def consumed(self) -> None:
+        self._can_send.clear()
 
 
 def sanitize_for_terminal(data: bytes) -> bytes:
     """Strip ANSI/control bytes so UART garbage cannot wreck the terminal."""
-    if data and all(b in _IDLE_NOISE for b in data):
+    if data and all(b in _IDLE_NOISE or b in _FLOW for b in data):
         return b""
     out = bytearray()
     for b in data:
-        if b in _IDLE_NOISE:
+        if b in _IDLE_NOISE or b in _FLOW:
             continue
         if b in (9, 10, 13) or 32 <= b < 127:
             out.append(b)
         else:
             out.extend(b"\\x%02x" % b)
     return bytes(out)
+
+
+def write_paced(
+    ser: serial.Serial,
+    data: bytes,
+    credit: UartCredit,
+    chunk: int = DEFAULT_CHUNK,
+    pause: float = DEFAULT_PAUSE,
+    progress: bool = False,
+) -> None:
+    """Write UART paced by XON/XOFF so the radio UART buffer cannot overflow."""
+    if not data:
+        return
+    if chunk < 1:
+        chunk = DEFAULT_CHUNK
+    total = len(data)
+    sent = 0
+    if progress and total > chunk:
+        print(
+            f"Pacing {total} B ({chunk} B / {pause:.2f}s, wait XON or timeout)…",
+            file=sys.stderr,
+        )
+    while sent < total:
+        credit.wait_ready(pause)
+        piece = data[sent : sent + chunk]
+        ser.write(piece)
+        ser.flush()
+        sent += len(piece)
+        if progress and total > chunk:
+            print(f"  {sent}/{total} B", file=sys.stderr)
+        # More to send, or a large blob: wait for the radio to finish this frame.
+        if sent < total or total > chunk:
+            credit.consumed()
+    if progress and total > chunk:
+        credit.wait_ready(pause)
+
+
+def start_reader(
+    ser: serial.Serial,
+    stop: threading.Event,
+    credit: UartCredit,
+) -> threading.Thread:
+    def reader() -> None:
+        while not stop.is_set():
+            data = ser.read(256)
+            if not data:
+                continue
+            data = credit.feed(data)
+            shown = sanitize_for_terminal(data)
+            if shown:
+                sys.stdout.buffer.write(shown)
+                sys.stdout.buffer.flush()
+
+    t = threading.Thread(target=reader, daemon=True)
+    t.start()
+    return t
 
 
 def cmd_list(_: argparse.Namespace) -> int:
@@ -95,31 +185,30 @@ def cmd_list(_: argparse.Namespace) -> int:
 
 def cmd_terminal(args: argparse.Namespace) -> int:
     ser = open_port(args.port, args.baud)
-    print(f"Connected to {args.port} @ {args.baud}. Ctrl-C to quit.", file=sys.stderr)
+    credit = UartCredit()
+    print(
+        f"Connected to {args.port} @ {args.baud}. "
+        f"Long pastes are paced ({args.chunk} B / {args.pause:.2f}s). Ctrl-C to quit.",
+        file=sys.stderr,
+    )
     stop = threading.Event()
-
-    def reader() -> None:
-        while not stop.is_set():
-            data = ser.read(256)
-            if data:
-                sys.stdout.buffer.write(sanitize_for_terminal(data))
-                sys.stdout.buffer.flush()
-
-    t = threading.Thread(target=reader, daemon=True)
-    t.start()
+    start_reader(ser, stop, credit)
     try:
         while True:
             if sys.stdin.isatty():
-                # Line-buffered interactive: send each line with newline
                 line = sys.stdin.buffer.readline()
                 if not line:
                     break
-                ser.write(line)
+                write_paced(
+                    ser, line, credit, chunk=args.chunk, pause=args.pause, progress=True
+                )
             else:
-                chunk = sys.stdin.buffer.read(256)
+                chunk = sys.stdin.buffer.read(4096)
                 if not chunk:
                     break
-                ser.write(chunk)
+                write_paced(
+                    ser, chunk, credit, chunk=args.chunk, pause=args.pause, progress=True
+                )
     except KeyboardInterrupt:
         pass
     finally:
@@ -129,31 +218,48 @@ def cmd_terminal(args: argparse.Namespace) -> int:
 
 
 def cmd_tunnel(args: argparse.Namespace) -> int:
-    """Raw byte tunnel: stdin -> UART, UART -> stdout (no line editing)."""
+    """Raw byte tunnel: stdin -> UART, UART -> stdout (paced, no line editing)."""
     ser = open_port(args.port, args.baud)
-    print(f"Tunnel on {args.port} @ {args.baud}. Ctrl-C to quit.", file=sys.stderr)
+    credit = UartCredit()
+    print(
+        f"Tunnel on {args.port} @ {args.baud} "
+        f"(paced {args.chunk} B / {args.pause:.2f}s). Ctrl-C to quit.",
+        file=sys.stderr,
+    )
     stop = threading.Event()
-
-    def reader() -> None:
-        while not stop.is_set():
-            data = ser.read(256)
-            if data:
-                sys.stdout.buffer.write(sanitize_for_terminal(data))
-                sys.stdout.buffer.flush()
-
-    t = threading.Thread(target=reader, daemon=True)
-    t.start()
+    start_reader(ser, stop, credit)
+    pending = bytearray()
     try:
         stdin_fd = sys.stdin.fileno()
         while not stop.is_set():
             r, _, _ = select.select([stdin_fd], [], [], 0.1)
             if stdin_fd in r:
-                data = os.read(stdin_fd, 256)
+                data = os.read(stdin_fd, 4096)
                 if not data:
+                    if pending:
+                        write_paced(
+                            ser,
+                            bytes(pending),
+                            credit,
+                            chunk=args.chunk,
+                            pause=args.pause,
+                        )
                     break
-                ser.write(data)
+                pending.extend(data)
+                if len(pending) >= args.chunk:
+                    write_paced(
+                        ser,
+                        bytes(pending),
+                        credit,
+                        chunk=args.chunk,
+                        pause=args.pause,
+                    )
+                    pending.clear()
     except KeyboardInterrupt:
-        pass
+        if pending:
+            write_paced(
+                ser, bytes(pending), credit, chunk=args.chunk, pause=args.pause
+            )
     finally:
         stop.set()
         ser.close()
@@ -178,7 +284,7 @@ def cmd_test(args: argparse.Namespace) -> int:
                 dst.reset_input_buffer()
                 src.write(payload)
                 src.flush()
-                # FSK frame + TX turnaround can take a few hundred ms
+                # FSK: a few hundred ms. DTMF: several seconds per 8-byte burst.
                 deadline = time.monotonic() + args.timeout
                 got = bytearray()
                 while time.monotonic() < deadline and len(got) < len(payload):
@@ -211,7 +317,7 @@ def cmd_test(args: argparse.Namespace) -> int:
 
 
 def cmd_send(args: argparse.Namespace) -> int:
-    """Send a long payload, paced to the FSK modem (~56 B / ~1 s)."""
+    """Send a long payload, paced by the radio XON/XOFF (FSK or DTMF)."""
     if args.file:
         data = open(args.file, "rb").read()
     elif args.bytes:
@@ -226,35 +332,51 @@ def cmd_send(args: argparse.Namespace) -> int:
         print("Nothing to send. Use --text, --file or --bytes.", file=sys.stderr)
         return 1
 
-    chunk_size = args.chunk
-    pause = args.pause
     ser = open_port(args.port, args.baud)
-    print(
-        f"Sending {len(data)} B on {args.port} "
-        f"({chunk_size} B / {pause:.2f}s)…",
-        file=sys.stderr,
-    )
-    sent = 0
+    credit = UartCredit()
+    stop = threading.Event()
+
+    def _credit_reader() -> None:
+        while not stop.is_set():
+            data_in = ser.read(256)
+            if data_in:
+                credit.feed(data_in)
+
+    threading.Thread(target=_credit_reader, daemon=True).start()
     t0 = time.monotonic()
     try:
-        while sent < len(data):
-            piece = data[sent : sent + chunk_size]
-            ser.write(piece)
-            ser.flush()
-            sent += len(piece)
-            print(f"  {sent}/{len(data)} B", file=sys.stderr)
-            if sent < len(data):
-                time.sleep(pause)
-        # Let the last FSK frame leave the radio
-        time.sleep(pause)
+        write_paced(
+            ser,
+            data,
+            credit,
+            chunk=args.chunk,
+            pause=args.pause,
+            progress=True,
+        )
     finally:
+        stop.set()
         ser.close()
     elapsed = max(time.monotonic() - t0, 1e-6)
     print(
-        f"Done: {sent} B in {elapsed:.1f}s ({sent / elapsed:.0f} B/s).",
+        f"Done: {len(data)} B in {elapsed:.1f}s ({len(data) / elapsed:.0f} B/s).",
         file=sys.stderr,
     )
     return 0
+
+
+def _add_pace_args(sp: argparse.ArgumentParser) -> None:
+    sp.add_argument(
+        "--chunk",
+        type=int,
+        default=DEFAULT_CHUNK,
+        help="Write chunk size (FSK frames are 56 B, DTMF 8 B; XON/XOFF paces)",
+    )
+    sp.add_argument(
+        "--pause",
+        type=float,
+        default=DEFAULT_PAUSE,
+        help="Seconds to wait for XON / between chunks (raise for DTMF, e.g. 4)",
+    )
 
 
 def main() -> int:
@@ -267,27 +389,33 @@ def main() -> int:
 
     sp = sub.add_parser("terminal", help="Interactive terminal on one radio")
     sp.add_argument("port", help="Serial device path")
+    _add_pace_args(sp)
     sp.set_defaults(func=cmd_terminal)
 
     sp = sub.add_parser("tunnel", help="Raw stdin/stdout tunnel")
     sp.add_argument("port", help="Serial device path")
+    _add_pace_args(sp)
     sp.set_defaults(func=cmd_tunnel)
 
     sp = sub.add_parser("test", help="Round-trip test between two radios")
     sp.add_argument("port_a", help="Serial device of radio A")
     sp.add_argument("port_b", help="Serial device of radio B")
     sp.add_argument("--rounds", type=int, default=5)
-    sp.add_argument("--timeout", type=float, default=2.0, help="Seconds to wait per direction")
+    sp.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TEST_TIMEOUT,
+        help="Seconds to wait per direction (default 20; FSK is fine, DTMF needs this)",
+    )
     sp.add_argument("--payload", default=None, help="Custom test string")
     sp.set_defaults(func=cmd_test)
 
-    sp = sub.add_parser("send", help="Send a long text/file, paced for FSK")
+    sp = sub.add_parser("send", help="Send a long text/file, paced by XON/XOFF")
     sp.add_argument("port", help="Serial device of the TX radio")
     sp.add_argument("--text", default=None, help="UTF-8 string to send")
     sp.add_argument("--file", default=None, help="File to send as-is")
     sp.add_argument("--bytes", type=int, default=None, help="Send N generated bytes")
-    sp.add_argument("--chunk", type=int, default=56, help="Bytes per FSK frame (max 56)")
-    sp.add_argument("--pause", type=float, default=1.0, help="Seconds between chunks")
+    _add_pace_args(sp)
     sp.set_defaults(func=cmd_send)
 
     args = p.parse_args()
