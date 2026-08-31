@@ -95,7 +95,7 @@ index e81e09b..ea59315 100644
      const unsigned int vfo = gEeprom.RX_VFO;
 +#ifdef ENABLE_SERIAL_BRIDGE
 +    if (SERIAL_BRIDGE_IsActive()) {
-+        if (SERIAL_BRIDGE_HoldDataRx()) {
++        if (SERIAL_BRIDGE_IsFsk() || SERIAL_BRIDGE_HoldDataRx()) {
 +            AUDIO_AudioPathOff();
 +            gEnableSpeaker = false;
 +            FUNCTION_Select(function);
@@ -106,17 +106,26 @@ index e81e09b..ea59315 100644
 +#endif
  
  #ifdef ENABLE_FEAT_F4HWN_LOGO_SAV
-@@ -905,5 +927,9 @@ static void CheckRadioInterrupts(void)
+@@ -905,5 +927,16 @@ static void CheckRadioInterrupts(void)
          if (interrupts.dtmf5ToneFound) {    
-             const char c = DTMF_GetCharacter(BK4819_GetDTMF_5TONE_Code()); // save the RX'ed DTMF character
-             if (c != 0xff) {
+-            const char c = DTMF_GetCharacter(BK4819_GetDTMF_5TONE_Code()); // save the RX'ed DTMF character
+-            if (c != 0xff) {
++            const uint8_t tone_code = BK4819_GetDTMF_5TONE_Code();
++            const char c = DTMF_GetCharacter(tone_code);
 +#ifdef ENABLE_SERIAL_BRIDGE
-+                if (SERIAL_BRIDGE_IsActive())
++            if (SERIAL_BRIDGE_IsActive()) {
++                if (SERIAL_BRIDGE_IsMorse())
++                    SERIAL_BRIDGE_OnCwHit(tone_code);
++                else if (SERIAL_BRIDGE_UsesSelCall())
++                    SERIAL_BRIDGE_OnSymbol(tone_code);
++                else if (c != 0xff)
 +                    SERIAL_BRIDGE_OnDtmf(c);
++            }
 +#endif
++            if (c != 0xff) {
                  if (gCurrentFunction != FUNCTION_TRANSMIT) {
                      if (gSetting_live_DTMF_decoder) {
-@@ -1009,6 +1035,27 @@ static void CheckRadioInterrupts(void)
+@@ -1009,6 +1037,27 @@ static void CheckRadioInterrupts(void)
          }
  #endif
  
@@ -125,9 +134,9 @@ index e81e09b..ea59315 100644
 +            gScreenToDisplay == DISPLAY_SERIAL_BRIDGE &&
 +            gCurrentFunction != FUNCTION_TRANSMIT &&
 +            !gPttIsPressed &&
-+            !SERIAL_BRIDGE_IsDtmf())
++            SERIAL_BRIDGE_IsFsk())
 +        {
-+            if (g_SquelchLost || SERIAL_BRIDGE_IsAnalogRx() || gSerialBridgeBusyTx) {
++            if (gSerialBridgeBusyTx) {
 +                for (unsigned int i = 0; i < 4; i++)
 +                    (void)BK4819_ReadRegister(BK4819_REG_5F);
 +                gFSKWriteIndex = 0;
@@ -144,7 +153,7 @@ index e81e09b..ea59315 100644
  #ifdef ENABLE_FEAT_F4HWN_BEAM
          if ((interrupts.fskFifoAlmostFull || interrupts.fskRxFinied) &&
              gBeamActive &&
-@@ -1034,3 +1054,8 @@ void APP_EndTransmission(void)
+@@ -1034,3 +1056,8 @@ void APP_EndTransmission(void)
  {
 +#ifdef ENABLE_SERIAL_BRIDGE
 +    if (SERIAL_BRIDGE_IsActive())
@@ -153,7 +162,7 @@ index e81e09b..ea59315 100644
 +
      // back to RX mode
      RADIO_SendEndOfTransmission();
-@@ -1275,6 +1300,9 @@ void APP_Update(void)
+@@ -1275,6 +1302,9 @@ void APP_Update(void)
          && gScanStateDir == SCAN_OFF
          && !gPttIsPressed
          && gCurrentFunction != FUNCTION_POWER_SAVE
@@ -163,7 +172,7 @@ index e81e09b..ea59315 100644
  #ifdef ENABLE_FEAT_F4HWN_BEAM
          && !gBeamActive
  #endif
-@@ -1357,6 +1387,9 @@ void APP_Update(void)
+@@ -1357,6 +1389,9 @@ void APP_Update(void)
              if (gEeprom.DUAL_WATCH != DUAL_WATCH_OFF &&
                  gScanStateDir == SCAN_OFF &&
                  !gCssBackgroundScan
@@ -173,7 +182,7 @@ index e81e09b..ea59315 100644
  #ifdef ENABLE_FEAT_F4HWN_BEAM
                  && !gBeamActive
  #endif
-@@ -1400,6 +1433,9 @@ void APP_Update(void)
+@@ -1400,6 +1435,9 @@ void APP_Update(void)
  #endif
          {
              // toggle between the two VFO's
@@ -183,7 +192,7 @@ index e81e09b..ea59315 100644
              DualwatchAlternate();
              gPowerSave_10ms   = power_save1_10ms;
              goToSleep = true;
-@@ -1441,9 +1477,17 @@ void CheckKeys(void)
+@@ -1441,9 +1479,17 @@ void CheckKeys(void)
      const bool serialConfigInProgress = SerialConfigInProgress();
  
  #ifdef ENABLE_FEAT_F4HWN
@@ -203,7 +212,7 @@ index e81e09b..ea59315 100644
  #endif
  
  #ifdef ENABLE_FEAT_F4HWN
-@@ -1597,6 +1641,11 @@ void APP_TimeSlice10ms(void)
+@@ -1597,6 +1643,11 @@ void APP_TimeSlice10ms(void)
  #endif
  
  #ifdef ENABLE_UART
@@ -215,7 +224,7 @@ index e81e09b..ea59315 100644
      if (UART_IsCommandAvailable(UART_PORT_UART)) {
          // SCHEDULER_Disable();
          UART_HandleCommand(UART_PORT_UART);
-@@ -1782,6 +1831,11 @@ void APP_TimeSlice10ms(void)
+@@ -1782,6 +1833,11 @@ void APP_TimeSlice10ms(void)
      }
  #endif
  
@@ -227,7 +236,7 @@ index e81e09b..ea59315 100644
      CheckKeys();
  }
  
-@@ -2074,7 +2128,11 @@ void APP_TimeSlice500ms(void)
+@@ -2074,7 +2130,11 @@ void APP_TimeSlice500ms(void)
                  && !SCANNER_IsScanning()
  #endif
              ) {
@@ -239,7 +248,17 @@ index e81e09b..ea59315 100644
              }
  
              if (disp != DISPLAY_INVALID) {
-@@ -2491,6 +2549,9 @@ static void ProcessKey(KEY_Code_t Key, bool bKeyPressed, bool bKeyHeld)
+@@ -2480,6 +2540,9 @@ static void ProcessKey(KEY_Code_t Key, bool bKeyPressed, bool bKeyHeld)
+ #ifdef ENABLE_FEAT_F4HWN // For F + SIDE1 or F + SIDE2
+             || (gWasFKeyPressed && (Key == KEY_SIDE1 || Key == KEY_SIDE2))
+ #endif
++#ifdef ENABLE_SERIAL_BRIDGE
++            || gScreenToDisplay == DISPLAY_SERIAL_BRIDGE
++#endif
+     ))) {
+ #ifdef ENABLE_FEAT_F4HWN_BEAM
+         if (gBeamActive)
+@@ -2491,6 +2554,9 @@ static void ProcessKey(KEY_Code_t Key, bool bKeyPressed, bool bKeyHeld)
      else if (!SCANNER_IsScanning()
  #ifdef ENABLE_AIRCOPY
              && gScreenToDisplay != DISPLAY_AIRCOPY
@@ -249,7 +268,7 @@ index e81e09b..ea59315 100644
  #endif
      ) {
          ACTION_Handle(Key, bKeyPressed, bKeyHeld);
-@@ -2554,7 +2615,11 @@ Skip:
+@@ -2554,7 +2620,11 @@ Skip:
              flagSaveChannel = gRequestSaveChannel;
  
              if (gRequestDisplayScreen == DISPLAY_INVALID)
@@ -261,7 +280,7 @@ index e81e09b..ea59315 100644
          }
  
          gRequestSaveChannel = 0;
-@@ -2569,7 +2634,11 @@ Skip:
+@@ -2569,7 +2639,11 @@ Skip:
              RADIO_ConfigureChannel(gEeprom.TX_VFO, gVfoConfigureMode);
  
          if (gRequestDisplayScreen == DISPLAY_INVALID)
@@ -273,7 +292,7 @@ index e81e09b..ea59315 100644
  
          gFlagReconfigureVfos = true;
          gVfoConfigureMode    = VFO_CONFIGURE_NONE;
-@@ -2622,6 +2691,11 @@ Skip:
+@@ -2622,6 +2696,11 @@ Skip:
      }
  #endif
  
@@ -478,7 +497,18 @@ index d1cc3cd..d6dae8a 100644
  #endif
  #include "audio.h"
  #include "dcs.h"
-@@ -922,6 +925,13 @@ void RADIO_SetupRegisters(bool switchToForeground)
+@@ -912,4 +915,9 @@ void RADIO_SetupRegisters(bool switchToForeground)
+-    BK4819_EnableDTMF();
++#ifdef ENABLE_SERIAL_BRIDGE
++    if (SERIAL_BRIDGE_IsActive())
++        SERIAL_BRIDGE_ApplyDecoder();
++    else
++#endif
++    BK4819_EnableDTMF();
+     InterruptMask |= BK4819_REG_3F_DTMF_5TONE_FOUND;
+ 
+     RADIO_SetupAGC(gRxVfo->Modulation == MODULATION_AM, false);
+@@ -922,6 +929,13 @@ void RADIO_SetupRegisters(bool switchToForeground)
  
      if (switchToForeground)
          FUNCTION_Select(FUNCTION_FOREGROUND);

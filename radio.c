@@ -697,6 +697,11 @@ void RADIO_SetupRegisters(bool switchToForeground)
 	// RX expander
 	BK4819_SetCompander((gRxVfo->Modulation == MODULATION_FM && gRxVfo->Compander >= 2) ? gRxVfo->Compander : 0);
 
+#ifdef ENABLE_SERIAL_BRIDGE
+	if (SERIAL_BRIDGE_IsActive())
+		SERIAL_BRIDGE_ApplyDecoder();
+	else
+#endif
 	BK4819_EnableDTMF();
 	InterruptMask |= BK4819_REG_3F_DTMF_5TONE_FOUND;
 

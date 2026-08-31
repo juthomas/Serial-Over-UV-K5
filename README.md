@@ -4,7 +4,8 @@
 
 This tree adds an **UART ↔ FSK / DTMF RF serial tunnel** between two UV-K5
 radios (`ENABLE_SERIAL_BRIDGE`). The radio **boots into SER FSK** (`*`
-toggles DTMF; EXIT returns to the normal VFO). See
+toggles the data modem; **F** cycles C scales TEL/CHR/MAJ/MIN/DOR/PEN/BLU;
+EXIT returns to the normal VFO). See
 **[docs/SERIAL_BRIDGE.md](docs/SERIAL_BRIDGE.md)** for build, flash, usage,
 and legal notes.
 
@@ -13,7 +14,7 @@ and legal notes.
 
 Do **not** flash a V1 packed binary with uvtools2 (black screen on V3). The
 air frames are the same, so V1 and V3 radios can talk if they use the same
-mode (both FSK, or both DTMF).
+mode (both FSK, or both data on the same scale).
 
 ---
 

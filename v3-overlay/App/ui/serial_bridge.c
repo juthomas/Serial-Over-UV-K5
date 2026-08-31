@@ -17,7 +17,16 @@ void UI_DisplaySerialBridge(void)
 
 	UI_DisplayClear();
 
-	UI_PrintString(SERIAL_BRIDGE_IsDtmf() ? "SER DTMF" : "SER FSK", 2, 127, 0, 8);
+	{
+		const char *tempo = SERIAL_BRIDGE_TempoLabel();
+		const char *mode  = SERIAL_BRIDGE_ModeName();
+
+		if (tempo[0] != '\0')
+			sprintf(String, "SER %s %s", mode, tempo);
+		else
+			sprintf(String, "SER %s", mode);
+		UI_PrintString(String, 2, 127, 0, 8);
+	}
 
 	if (gInputBoxIndex == 0) {
 		uint32_t frequency = gTxVfo->freq_config_RX.Frequency;
@@ -37,8 +46,15 @@ void UI_DisplaySerialBridge(void)
 		sprintf(String, "RX %u B:%u", gSerialBridgeRxPackets, gSerialBridgeRxBytes);
 	UI_PrintStringSmallNormal(String, 2, 127, 4);
 
-	sprintf(String, "E:%u *=%s PTT", gSerialBridgeRxErrors,
-		SERIAL_BRIDGE_IsDtmf() ? "FSK" : "DTMF");
+	if (SERIAL_BRIDGE_IsDtmf())
+		sprintf(String, "E:%u F=%s *=%s", gSerialBridgeRxErrors,
+			SERIAL_BRIDGE_NextScaleName(), SERIAL_BRIDGE_NextModeName());
+	else if (SERIAL_BRIDGE_IsMorse())
+		sprintf(String, "E:%u F=%s *=%s", gSerialBridgeRxErrors,
+			SERIAL_BRIDGE_NextCwToneName(), SERIAL_BRIDGE_NextModeName());
+	else
+		sprintf(String, "E:%u *=%s PTT", gSerialBridgeRxErrors,
+			SERIAL_BRIDGE_NextModeName());
 	UI_PrintStringSmallNormal(String, 2, 127, 5);
 
 	ST7565_BlitFullScreen();

@@ -431,10 +431,10 @@ void APP_StartListening(FUNCTION_Type_t function)
 	const unsigned int vfo = gEeprom.RX_VFO;
 
 #ifdef ENABLE_SERIAL_BRIDGE
-	/* Analog QSO: data modem off, speaker owned by stock StartListening.
-	 * Incoming DTMF data must not be treated as voice (HP stays closed). */
+	/* FSK burst and data tones open squelch. Do not treat that as analog
+	 * voice — EnterAnalogRx() kills REG_58 (FSK) and the first scale note. */
 	if (SERIAL_BRIDGE_IsActive()) {
-		if (SERIAL_BRIDGE_HoldDataRx()) {
+		if (SERIAL_BRIDGE_IsFsk() || SERIAL_BRIDGE_HoldDataRx()) {
 			AUDIO_AudioPathOff();
 			gEnableSpeaker = false;
 			FUNCTION_Select(function);
@@ -632,12 +632,19 @@ static void CheckRadioInterrupts(void)
 //			g_CTCSS_Lost = true;
 
 		if (interrupts.dtmf5ToneFound) {	
-			const char c = DTMF_GetCharacter(BK4819_GetDTMF_5TONE_Code()); // save the RX'ed DTMF character
-			if (c != 0xff) {
+			const uint8_t tone_code = BK4819_GetDTMF_5TONE_Code();
+			const char c = DTMF_GetCharacter(tone_code); // save the RX'ed DTMF character
 #ifdef ENABLE_SERIAL_BRIDGE
-				if (SERIAL_BRIDGE_IsActive())
+			if (SERIAL_BRIDGE_IsActive()) {
+				if (SERIAL_BRIDGE_IsMorse())
+					SERIAL_BRIDGE_OnCwHit(tone_code);
+				else if (SERIAL_BRIDGE_UsesSelCall())
+					SERIAL_BRIDGE_OnSymbol(tone_code);
+				else if (c != 0xff)
 					SERIAL_BRIDGE_OnDtmf(c);
+			}
 #endif
+			if (c != 0xff) {
 				if (gCurrentFunction != FUNCTION_TRANSMIT) {
 					if (gSetting_live_DTMF_decoder) {
 						size_t len = strlen(gDTMF_RX_live);
@@ -744,9 +751,10 @@ static void CheckRadioInterrupts(void)
 			gScreenToDisplay == DISPLAY_SERIAL_BRIDGE &&
 			gCurrentFunction != FUNCTION_TRANSMIT &&
 			!gPttIsPressed &&
-			!SERIAL_BRIDGE_IsDtmf())
+			SERIAL_BRIDGE_IsFsk())
 		{
-			if (g_SquelchLost || SERIAL_BRIDGE_IsAnalogRx() || gSerialBridgeBusyTx) {
+			/* FSK opens squelch — still assemble. Drain only own TX echo. */
+			if (gSerialBridgeBusyTx) {
 				for (unsigned int i = 0; i < 4; i++)
 					(void)BK4819_ReadRegister(BK4819_REG_5F);
 				gFSKWriteIndex = 0;
@@ -1842,6 +1850,11 @@ static void ProcessKey(KEY_Code_t Key, bool bKeyPressed, bool bKeyHeld)
 		}
 #endif
 	}
+#ifdef ENABLE_SERIAL_BRIDGE
+	else if (gScreenToDisplay == DISPLAY_SERIAL_BRIDGE) {
+		ProcessKeysFunctions[gScreenToDisplay](Key, bKeyPressed, bKeyHeld);
+	}
+#endif
 	else if (Key != KEY_SIDE1 && Key != KEY_SIDE2 && gScreenToDisplay != DISPLAY_INVALID) {
 		ProcessKeysFunctions[gScreenToDisplay](Key, bKeyPressed, bKeyHeld);
 	}
