@@ -34,6 +34,9 @@
 #include "helper/battery.h"
 #include "misc.h"
 #include "radio.h"
+#ifdef ENABLE_SERIAL_BRIDGE
+	#include "app/serial_bridge.h"
+#endif
 #include "settings.h"
 #include "ui/menu.h"
 
@@ -706,6 +709,13 @@ void RADIO_SetupRegisters(bool switchToForeground)
 
 	if (switchToForeground)
 		FUNCTION_Select(FUNCTION_FOREGROUND);
+
+#ifdef ENABLE_SERIAL_BRIDGE
+	if (SERIAL_BRIDGE_IsActive()
+		&& gCurrentFunction != FUNCTION_TRANSMIT
+		&& !gPttIsPressed)
+		SERIAL_BRIDGE_ReArm();
+#endif
 }
 
 #ifdef ENABLE_NOAA

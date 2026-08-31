@@ -29,7 +29,7 @@
 
 static const uint32_t gDefaultFrequencyTable[] =
 {
-	14500000,    //
+	43300000,    //
 	14550000,    //
 	43300000,    //
 	43320000,    //
@@ -404,7 +404,7 @@ void SETTINGS_FactoryReset(bool bIsAll)
 
 	if (bIsAll)
 	{
-		RADIO_InitInfo(gRxVfo, FREQ_CHANNEL_FIRST + BAND6_400MHz, 43350000);
+		RADIO_InitInfo(gRxVfo, FREQ_CHANNEL_FIRST + BAND6_400MHz, 43300000);
 
 		// set the first few memory channels
 		for (i = 0; i < ARRAY_SIZE(gDefaultFrequencyTable); i++)

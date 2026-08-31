@@ -34,6 +34,9 @@
 #include "frequencies.h"
 #include "functions.h"
 #include "helper/battery.h"
+#ifdef ENABLE_SERIAL_BRIDGE
+	#include "app/serial_bridge.h"
+#endif
 #include "misc.h"
 #include "radio.h"
 #include "settings.h"
@@ -138,6 +141,10 @@ void FUNCTION_PowerSave() {
 
 void FUNCTION_Transmit()
 {
+#ifdef ENABLE_SERIAL_BRIDGE
+	SERIAL_BRIDGE_LeaveFsk();
+#endif
+
 	// if DTMF is enabled when TX'ing, it changes the TX audio filtering !! .. 1of11
 	BK4819_DisableDTMF();
 

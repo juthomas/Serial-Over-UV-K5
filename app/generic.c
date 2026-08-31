@@ -134,7 +134,11 @@ void GENERIC_Key_PTT(bool bKeyPressed)
 #endif
 			RADIO_SetVfoState(VFO_STATE_NORMAL);
 
-			if (gScreenToDisplay != DISPLAY_MENU)     // 1of11 .. don't close the menu
+			if (gScreenToDisplay != DISPLAY_MENU     // 1of11 .. don't close the menu
+#ifdef ENABLE_SERIAL_BRIDGE
+				&& gScreenToDisplay != DISPLAY_SERIAL_BRIDGE
+#endif
+			)
 				gRequestDisplayScreen = DISPLAY_MAIN;
 		}
 
@@ -177,7 +181,11 @@ void GENERIC_Key_PTT(bool bKeyPressed)
 		return;
 	}
 
-	if (gScreenToDisplay != DISPLAY_MENU)     // 1of11 .. don't close the menu
+	if (gScreenToDisplay != DISPLAY_MENU     // 1of11 .. don't close the menu
+#ifdef ENABLE_SERIAL_BRIDGE
+		&& gScreenToDisplay != DISPLAY_SERIAL_BRIDGE
+#endif
+	)
 		gRequestDisplayScreen = DISPLAY_MAIN;
 
 
@@ -226,6 +234,9 @@ done:
 	if (gScreenToDisplay != DISPLAY_MENU
 #ifdef ENABLE_FMRADIO
 		&& gRequestDisplayScreen != DISPLAY_FM
+#endif
+#ifdef ENABLE_SERIAL_BRIDGE
+		&& gScreenToDisplay != DISPLAY_SERIAL_BRIDGE
 #endif
 	) {
 		// 1of11 .. don't close the menu

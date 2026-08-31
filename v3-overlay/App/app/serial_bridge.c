@@ -1,12 +1,14 @@
-/* Serial Bridge — UART <-> FSK RF tunnel for UV-K5 (egzumer-based)
+/* Serial Bridge — UART <-> FSK RF tunnel for UV-K5 V3 (PY32F071)
  *
- * Frame (72 bytes / 36 x uint16_t), same FSK length as Air Copy:
+ * Same 72-byte air frame as V1 (DP32G030) so the two radios interoperate:
  *   [0]      = 0xABCD
  *   [1]      = (seq << 8) | len   (len = 1..56)
  *   [2..29]  = payload (up to 56 bytes)
  *   [30..33] = padding (0)
  *   [34]     = CRC16-CCITT over bytes of words [1..33] (66 bytes)
  *   [35]     = 0xDCBA
+ *
+ * UART RX uses PY32 DMA remaining-count instead of DP32 DMA_CH0->ST.
  *
  * XOR mode: FSK UART at idle (speaker off); analog FM during a QSO (FSK off).
  */
@@ -20,7 +22,6 @@
 #include "app/app.h"
 #include "app/generic.h"
 #include "audio.h"
-#include "bsp/dp32g030/dma.h"
 #include "driver/bk4819.h"
 #include "driver/crc.h"
 #include "driver/gpio.h"
@@ -28,9 +29,11 @@
 #include "frequencies.h"
 #include "functions.h"
 #include "misc.h"
+#include "py32f071_ll_dma.h"
 #include "radio.h"
 #include "settings.h"
 #include "ui/inputbox.h"
+#include "ui/status.h"
 #include "ui/ui.h"
 
 #define SB_SYNC_HEAD   0xABCDu
@@ -39,10 +42,11 @@
 #define SB_IDLE_TICKS  3u   /* ~30 ms at 10 ms slice before flush */
 #define SB_TX_GAP      20u  /* ~200 ms mute after TX: drop self-RX + USB EMI */
 #define SB_BUSY_WAIT   20u  /* max ~200 ms wait if channel busy */
+#define SB_UART_DMA_CH LL_DMA_CHANNEL_2
 
 static uint8_t  s_uart_rx[SB_UART_BUF];
 static uint8_t  s_uart_len;
-static uint8_t  s_uart_dma_idx;
+static uint16_t s_uart_dma_idx;
 static uint8_t  s_idle_ticks;
 static uint8_t  s_tx_gap;
 static uint8_t  s_busy_wait;
@@ -61,6 +65,20 @@ uint16_t gSerialBridgeRxErrors;
 uint16_t gSerialBridgeTxBytes;
 uint16_t gSerialBridgeRxBytes;
 bool     gSerialBridgeBusyTx;
+
+static uint16_t SB_UartDmaWriteIndex(void)
+{
+	uint32_t remaining;
+
+	if (!LL_DMA_IsEnabledChannel(DMA1, SB_UART_DMA_CH))
+		return 0;
+
+	remaining = LL_DMA_GetDataLength(DMA1, SB_UART_DMA_CH);
+	if (remaining > sizeof(UART_DMA_Buffer))
+		return 0;
+
+	return (uint16_t)(sizeof(UART_DMA_Buffer) - remaining);
+}
 
 static void SB_SetupFSK(void)
 {
@@ -100,19 +118,17 @@ static void SB_RestoreAnalogRx(void)
 
 static void SB_DiscardUartNoise(void)
 {
-	/* EMI during FSK TX shows up as 0xFF on the programming cable UART.
-	 * Throw those bytes away so we neither echo them to the PC nor
-	 * re-transmit them as a new FSK frame. */
-	s_uart_dma_idx = (uint8_t)(DMA_CH0->ST & 0xFFFU);
+	/* EMI during FSK TX shows up as 0xFF on the programming cable UART. */
+	s_uart_dma_idx = SB_UartDmaWriteIndex();
 }
 
 static void SB_DrainUart(void)
 {
-	const uint16_t dma_len = DMA_CH0->ST & 0xFFFU;
+	const uint16_t dma_len = SB_UartDmaWriteIndex();
 
 	while (s_uart_dma_idx != dma_len && s_uart_len < SB_UART_BUF) {
 		s_uart_rx[s_uart_len++] = UART_DMA_Buffer[s_uart_dma_idx];
-		s_uart_dma_idx = (uint8_t)((s_uart_dma_idx + 1u) % sizeof(UART_DMA_Buffer));
+		s_uart_dma_idx = (uint16_t)((s_uart_dma_idx + 1u) % sizeof(UART_DMA_Buffer));
 		s_idle_ticks = 0;
 	}
 }
@@ -128,14 +144,13 @@ static void SB_ApplyFrequency(uint32_t Frequency)
 	const FREQUENCY_Band_t band = FREQUENCY_GetBand(Frequency);
 	uint16_t step = gTxVfo->StepFrequency;
 
-	/* 8.33 kHz uses an aviation channel scheme — not for a typed VFO freq. */
 	if (step == 0 || step == 833)
 		step = 1250;
 
 	Frequency = FREQUENCY_RoundToStep(Frequency, step);
 
 	gTxVfo->Band = band;
-	gTxVfo->CHANNEL_SAVE = (uint8_t)(FREQ_CHANNEL_FIRST + band);
+	gTxVfo->CHANNEL_SAVE = (uint16_t)(FREQ_CHANNEL_FIRST + band);
 	gEeprom.ScreenChannel[Vfo] = gTxVfo->CHANNEL_SAVE;
 	gEeprom.FreqChannel[Vfo]   = gTxVfo->CHANNEL_SAVE;
 	gTxVfo->freq_config_RX.Frequency = Frequency;
@@ -170,7 +185,7 @@ void SERIAL_BRIDGE_ReArm(void)
 	if (SB_AnalogRxActive()
 	    || g_SquelchLost
 	    || gEndOfRxDetectedMaybe
-	    || gTailToneEliminationCountdown_10ms > 0
+	    || gTailNoteEliminationCountdown_10ms > 0
 	    || s_tx_gap > 0)
 		return;
 
@@ -264,10 +279,7 @@ static void SB_SendPayload(const uint8_t *data, uint8_t len)
 	s_tx_seq++;
 	s_tx_gap = SB_TX_GAP;
 	s_pending_rearm = true;
-	/* Keep BusyTx set until the mute window ends so FSK RX + UART EMI
-	 * cannot bounce back to the PC as \xff. */
 
-	/* shift remaining UART bytes */
 	if (len < s_uart_len) {
 		memmove(s_uart_rx, s_uart_rx + len, s_uart_len - len);
 		s_uart_len -= len;
@@ -307,7 +319,7 @@ void SERIAL_BRIDGE_Start(void)
 	s_busy_wait    = 0;
 	s_pending_rearm = false;
 	s_have_rx_seq  = false;
-	s_uart_dma_idx = (uint8_t)(DMA_CH0->ST & 0xFFFU);
+	s_uart_dma_idx = 0;
 	gSerialBridgeTxPackets = 0;
 	gSerialBridgeRxPackets = 0;
 	gSerialBridgeRxErrors  = 0;
@@ -324,7 +336,13 @@ void SERIAL_BRIDGE_Start(void)
 
 	RADIO_SelectVfos();
 	GUI_SelectNextDisplay(DISPLAY_SERIAL_BRIDGE);
+	gRequestDisplayScreen = DISPLAY_SERIAL_BRIDGE;
+	GUI_DisplayScreen();
+	UI_DisplayStatus();
+
 	SB_ApplyFrequency(SERIAL_BRIDGE_DEFAULT_FREQ);
+	s_uart_dma_idx = SB_UartDmaWriteIndex();
+	gUpdateDisplay = true;
 	gUpdateStatus  = true;
 }
 
@@ -363,11 +381,9 @@ void SERIAL_BRIDGE_StorePacket(void)
 
 	SERIAL_BRIDGE_ReArm();
 
-	/* Ignore leftover FIFO / own echo while PA is still ringing. */
 	if (gSerialBridgeBusyTx || s_tx_gap > 0)
 		return;
 
-	/* Same REG_0B quirk as Air Copy: bit4 set means CRC fail in practice */
 	if ((status & 0x0010U) != 0 || gSerialBridgeFSKBuffer[0] != SB_SYNC_HEAD || gSerialBridgeFSKBuffer[35] != SB_SYNC_TAIL) {
 		gSerialBridgeRxErrors++;
 		gUpdateDisplay = true;
@@ -389,11 +405,9 @@ void SERIAL_BRIDGE_StorePacket(void)
 		return;
 	}
 
-	/* Own packet leaking back through the FSK RX path */
 	if (seq == (uint8_t)(s_tx_seq - 1u))
 		return;
 
-	/* Drop duplicate retransmits */
 	if (s_have_rx_seq && seq == s_last_rx_seq) {
 		gUpdateDisplay = true;
 		return;
@@ -437,7 +451,7 @@ void SERIAL_BRIDGE_TimeSlice10ms(void)
 	if (s_pending_rearm
 	    && !g_SquelchLost
 	    && !gEndOfRxDetectedMaybe
-	    && gTailToneEliminationCountdown_10ms == 0)
+	    && gTailNoteEliminationCountdown_10ms == 0)
 		SERIAL_BRIDGE_ReArm();
 
 	if (s_tx_gap > 0)
@@ -456,11 +470,9 @@ void SERIAL_BRIDGE_TimeSlice10ms(void)
 	if (chunk > SERIAL_BRIDGE_PAYLOAD_MAX)
 		chunk = SERIAL_BRIDGE_PAYLOAD_MAX;
 
-	/* Flush when buffer full or idle timeout after first byte */
 	if (s_uart_len < SERIAL_BRIDGE_PAYLOAD_MAX && s_idle_ticks < SB_IDLE_TICKS)
 		return;
 
-	/* Simple CSMA: defer TX while squelch open (someone transmitting) */
 	if (g_SquelchLost && s_busy_wait < SB_BUSY_WAIT) {
 		s_busy_wait++;
 		return;
@@ -542,7 +554,6 @@ void SERIAL_BRIDGE_ProcessKeys(KEY_Code_t Key, bool bKeyPressed, bool bKeyHeld)
 		break;
 
 	case KEY_MENU:
-		/* Force flush any pending UART data */
 		s_idle_ticks = SB_IDLE_TICKS;
 		break;
 

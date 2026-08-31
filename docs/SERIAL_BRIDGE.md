@@ -29,13 +29,35 @@ avec le flag `ENABLE_SERIAL_BRIDGE`.
 Le câble de programmation parle **UART au MCU** (pas l’audio). Aucun AIOC
 n’est requis : le FSK est généré dans le BK4819.
 
+## Radios V1 vs V3 (flash)
+
+Deux MCU différents : **ne jamais** envoyer un binaire V1 à uvtools2, ni un
+binaire V3 à uvtools. C’est ce qui laisse l’écran noir sur un UV-K5(8).
+
+| Radio | MCU | Make | Fichier | Outil |
+|-------|-----|------|---------|-------|
+| UV-K5 **(88)** / V1 | DP32G030 (Cortex-M0) | `make` ou `make v1` | `compiled-firmware/firmware-v1.packed.bin` (alias `firmware.packed.bin`) | [uvtools](https://egzumer.github.io/uvtools/) — **packed** egzumer |
+| UV-K5 **(8)** / V3 | PY32F071 (Cortex-M0+) | `make v3` | `compiled-firmware/firmware-v3.bin` | [uvtools2](https://armel.github.io/uvtools2/) — **`.bin` brut**, pas packed |
+
+`make` sans argument reste **V1**. `make all-hw` construit les deux.
+
+La trame FSK air est **identique** (`0xABCD` / seq+len / CRC / `0xDCBA`) : un
+V1 et un V3 peuvent se parler.
+
+Le V3 (bootloader `7.00.07`) se récupère avec un firmware F4HWN Fusion V3
+(ex. `f4hwn.fusion.v5.7.0.bin`) via uvtools2 si l’écran reste noir.
+
 ## Build
 
 Prérequis :
 
 - Toolchain ARM GNU (`arm-none-eabi-gcc`) — ce dépôt accepte un tarball
-  officiel dans `.toolchain/` (ignoré par git)
-- Python 3 + venv pour packer le firmware et l’outil PC
+  officiel dans `.toolchain/` (ignoré par git). Le V3 utilise le même
+  compilateur avec `-mcpu=cortex-m0plus` (CMake/Ninja).
+- Python 3 + venv pour packer le firmware V1 et l’outil PC
+- `cmake` ≥ 3.22 et `ninja` pour le build V3
+- Sous-module / clone `vendor/uv-k5-v3` (F4HWN tag `v5.7.0`) — `make v3`
+  le récupère si besoin
 
 ```bash
 # Optionnel : toolchain locale (si Homebrew est incomplet)
@@ -44,9 +66,10 @@ Prérequis :
 python3 -m venv .venv
 .venv/bin/pip install crcmod pyserial
 
-make -j$(sysctl -n hw.ncpu)
-# artefacts : firmware.bin  firmware.packed.bin
-# copie aussi possible dans compiled-firmware/
+make -j$(sysctl -n hw.ncpu)          # V1
+make v3                              # V3
+make -j$(sysctl -n hw.ncpu) all-hw   # les deux
+# artefacts dans compiled-firmware/
 ```
 
 Flags utiles (déjà réglés par défaut dans ce fork) :
@@ -54,7 +77,7 @@ Flags utiles (déjà réglés par défaut dans ce fork) :
 | Flag | Défaut | Rôle |
 |------|--------|------|
 | `ENABLE_SERIAL_BRIDGE` | 1 | Mode tunnel FSK |
-| `ENABLE_ANALOG_PTT` | 0 | PTT vocal analogique (off = évite le RF dans le USB/Mac) |
+| `ENABLE_ANALOG_PTT` | 0 | PTT vocal aussi hors du bridge (off = VFO principal USB-safe) |
 | `ENABLE_UART` | 1 | Câble prog + bridge |
 | `ENABLE_SPECTRUM` / `FMRADIO` / `VOX` / `DTMF_CALLING` | 0 | Désactivés pour libérer de la flash |
 
@@ -65,39 +88,49 @@ Taille typique : ~48 Ko de code (budget flash ~60 Ko utilisables).
 1. Éteindre la radio.
 2. Maintenir **PTT**, allumer → LED blanche fixe (mode flash).
 3. Brancher le câble de programmation.
-4. Flasher `firmware.packed.bin` avec :
-   - [uvtools](https://egzumer.github.io/uvtools/) (navigateur), ou
-   - un flasher communautaire compatible K5 (`k5prog`, etc.).
+4. Flasher le **bon** fichier :
+   - **V1 (88)** : `compiled-firmware/firmware-v1.packed.bin` avec
+     [uvtools](https://egzumer.github.io/uvtools/).
+   - **V3 (8)** : `compiled-firmware/firmware-v3.bin` avec
+     [uvtools2](https://armel.github.io/uvtools2/).
 5. Relâcher / redémarrer normalement.
 
-Répéter sur **les deux** radios.
+Répéter sur **les deux** radios (même fréquence, même trame air).
 
 ## Activation du mode Serial Bridge
 
 Le firmware **démarre directement** sur l’écran `SER BRIDGE` (après l’écran
-d’accueil). **EXIT** quitte le mode et revient à la radio normale ; le prochain
-allumage relance le bridge.
+d’accueil), tuné sur **433.000 MHz**. **EXIT** quitte le mode et revient à la
+radio normale ; le prochain allumage relance le bridge (à nouveau sur 433.000).
 
 Pour y revenir sans redémarrer : Menu → `F1Shrt` / `F1Long` / `F2Shrt` /
 `F2Long` / `M Long` → assigner **`SER BRIDGE`** à une touche latérale, puis
 appuyer sur cette touche.
 
-Avant d’utiliser le tunnel :
+Sur l’écran `SER BRIDGE` :
 
-1. Sur chaque radio, régler **la même fréquence**, même pas de fréquence,
-   **CTCSS/DCS off**, bande passante large ou étroite identique, puissance
-   adaptée (LOW pour les essais).
-2. L’écran affiche `SER BRIDGE` (fréquence + compteurs TX/RX/E).
+1. Taper la fréquence (6 chiffres, ex. `433000` → 433.000 MHz) ou **UP/DOWN**
+   pour stepper. **EXIT** efface un chiffre, ou quitte le mode si rien n’est
+   en saisie.
+2. **PTT** = TX vocal analogique FM (comme un talkie). Relâcher pour revenir
+   en écoute.
+3. **XOR FSK / analogique** : au repos le modem FSK écoute (HP fermé). Pendant
+   une QSO analogique (`StartListening` / PTT) le FSK est coupé ; le HP n’est
+   ouvert/fermé que par le firmware stock. Fin de QSO → réarmement FSK.
+
+Les deux radios doivent être sur **la même fréquence**. CTCSS/DCS off, bande
+passante identique, puissance adaptée (LOW pour les essais).
 
 Pendant le bridge :
 
 - Le protocole Chirp/programmation UART est **suspendu**.
-- Le PTT vocal analogique est **coupé par défaut** dans ce firmware
-  (`ENABLE_ANALOG_PTT=0`) : appuyer sur PTT n’émet plus en FM, donc plus de
-  parasites USB/écran Mac. Le tunnel FSK continue de transmettre via le port
-  série, pas via le PTT.
-- Pour réactiver la voix analogique (câble **débranché**) : recompiler avec
-  `make ENABLE_ANALOG_PTT=1`.
+- Voix analogique et tunnel FSK partagent le même canal (half-duplex) :
+  pendant un paquet FSK le PTT attend ; pendant le PTT l’UART est bufferisé.
+- Les rafales FSK s’entendent comme un modem. Pendant une QSO analogique le
+  FSK est coupé : plus de faux `E:` CRC dus au bruit FM.
+- Hors de cet écran, le PTT analogique reste coupé si `ENABLE_ANALOG_PTT=0`
+  (protection USB/Mac). Recompiler avec `make ENABLE_ANALOG_PTT=1` pour le
+  réactiver aussi sur le VFO principal.
 
 ## PTT + câble USB + Mac (écran qui bug)
 
@@ -112,13 +145,13 @@ C’est un problème connu du connecteur Kenwood, **pas un bug d’affichage mac
 
 À faire :
 
-- **Ne pas appuyer sur PTT** tant que le câble de programmation est branché
-  sur un ordinateur. En mode `SER BRIDGE`, le firmware ignore déjà le PTT vocal.
+- En mode `SER BRIDGE`, le PTT vocal est **actif**. Avec le câble USB branché
+  sur un ordinateur, **débrancher le câble avant d’émettre à la voix**, ou
+  s’attendre à des glitches USB / écran.
 - Utiliser l’outil `tools/serial_bridge_pc.py` (il force DTR/RTS à 0 et filtre
   les caractères de contrôle). Éviter `screen` / Serial Monitor pendant les tests.
 - Utiliser `/dev/cu.usbserial-*` (pas `/dev/tty.usbserial-*`).
 - Puissance **LOW**, radio un peu éloignée du Mac, ferrite sur le USB si besoin.
-- Pour de la voix : **débrancher le câble** avant d’émettre.
 
 ## Usage PC
 
@@ -226,7 +259,7 @@ sur le PC B. Durée typique : 400 octets ≈ 7–8 s.
 2. `serial_bridge_pc.py test PORT_A PORT_B`
 3. Vérifier les compteurs `TX`/`RX` à l’écran et `E:` (erreurs CRC) proche de 0.
 
-## Protocole air (V1)
+## Protocole air (V1 et V3)
 
 Trame FSK fixe 72 octets (comme Air Copy), 1200 baud :
 
@@ -246,9 +279,11 @@ Débit utile typique : **~500–900 octets/s** selon conditions (pas un câble U
 
 ## Limites
 
-- Half-duplex uniquement (pas de full-duplex simultané).
-- En n’émettant que d’un côté, le terminal peut afficher `\xff` : ce n’est **pas**
-  un message reçu, c’est du bruit USB/UART pendant le TX FSK. Inoffensif.
+- Half-duplex uniquement (pas de full-duplex simultané) : PTT analogique et
+  TX FSK ne peuvent pas coexister.
+- En n’émettant que d’un côté, le terminal peut voir du bruit USB/UART pendant
+  le TX FSK (CH340 : `\xff`, PL2303 : `\x00`). Ce n’est **pas** un message
+  reçu. L’outil `terminal` les ignore. Inoffensif.
 - Pertes possibles sans retransmission.
 - Pas de TCP/IP, VPN, ni chiffrement.
 - Chirp inutilisable pendant le bridge.
@@ -256,10 +291,12 @@ Débit utile typique : **~500–900 octets/s** selon conditions (pas un câble U
 
 ## Fichiers principaux
 
-- [`app/serial_bridge.c`](../app/serial_bridge.c) — state machine UART ↔ FSK
-- [`ui/serial_bridge.c`](../ui/serial_bridge.c) — écran
+- [`app/serial_bridge.c`](../app/serial_bridge.c) — state machine UART ↔ FSK (V1)
+- [`ui/serial_bridge.c`](../ui/serial_bridge.c) — écran (V1)
+- [`v3-overlay/App/app/serial_bridge.c`](../v3-overlay/App/app/serial_bridge.c) — port PY32 (V3)
+- [`patches/v3-serial-bridge.patch`](../patches/v3-serial-bridge.patch) — hooks F4HWN V3
 - [`tools/serial_bridge_pc.py`](../tools/serial_bridge_pc.py) — outil PC
-- [`Makefile`](../Makefile) — `ENABLE_SERIAL_BRIDGE`
+- [`Makefile`](../Makefile) — `make` / `make v1` / `make v3` / `make all-hw`
 
 ## Licence
 

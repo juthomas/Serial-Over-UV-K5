@@ -64,14 +64,17 @@ def open_port(path: str, baud: int = DEFAULT_BAUD) -> serial.Serial:
     return ser
 
 
+# FSK TX EMI on the programming cable: CH340 → 0xFF, PL2303 → 0x00.
+_IDLE_NOISE = frozenset((0x00, 0xFF))
+
+
 def sanitize_for_terminal(data: bytes) -> bytes:
-    """Strip ANSI/control bytes so UART garbage cannot wreck macOS Terminal."""
-    # CH340 idle / RF pickup is almost always 0xFF
-    if data and all(b == 0xFF for b in data):
+    """Strip ANSI/control bytes so UART garbage cannot wreck the terminal."""
+    if data and all(b in _IDLE_NOISE for b in data):
         return b""
     out = bytearray()
     for b in data:
-        if b == 0xFF:
+        if b in _IDLE_NOISE:
             continue
         if b in (9, 10, 13) or 32 <= b < 127:
             out.append(b)

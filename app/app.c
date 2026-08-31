@@ -184,6 +184,12 @@ static void HandleIncoming(void)
 		if (gDTMF_RX_index > 0)
 			DTMF_clear_RX();
 #endif
+#ifdef ENABLE_SERIAL_BRIDGE
+		if (SERIAL_BRIDGE_IsActive()) {
+			AUDIO_AudioPathOff();
+			gEnableSpeaker = false;
+		}
+#endif
 		if (gCurrentFunction != FUNCTION_FOREGROUND) {
 			FUNCTION_Select(FUNCTION_FOREGROUND);
 			gUpdateDisplay = true;
@@ -424,6 +430,12 @@ void APP_StartListening(FUNCTION_Type_t function)
 {
 	const unsigned int vfo = gEeprom.RX_VFO;
 
+#ifdef ENABLE_SERIAL_BRIDGE
+	/* Analog QSO: FSK modem off, speaker owned by stock StartListening. */
+	if (SERIAL_BRIDGE_IsActive())
+		SERIAL_BRIDGE_EnterAnalogRx();
+#endif
+
 #ifdef ENABLE_DTMF_CALLING
 	if (gSetting_KILLED)
 		return;
@@ -494,7 +506,11 @@ void APP_StartListening(FUNCTION_Type_t function)
 	if (function == FUNCTION_MONITOR)
 #endif
 	{	// squelch is disabled
-		if (gScreenToDisplay != DISPLAY_MENU)     // 1of11 .. don't close the menu
+		if (gScreenToDisplay != DISPLAY_MENU     // 1of11 .. don't close the menu
+#ifdef ENABLE_SERIAL_BRIDGE
+			&& gScreenToDisplay != DISPLAY_SERIAL_BRIDGE
+#endif
+		)
 			GUI_SelectNextDisplay(DISPLAY_MAIN);
 	}
 	else
@@ -713,9 +729,11 @@ static void CheckRadioInterrupts(void)
 
 #ifdef ENABLE_SERIAL_BRIDGE
 		if (interrupts.fskFifoAlmostFull &&
-			gScreenToDisplay == DISPLAY_SERIAL_BRIDGE)
+			gScreenToDisplay == DISPLAY_SERIAL_BRIDGE &&
+			gCurrentFunction != FUNCTION_TRANSMIT &&
+			!gPttIsPressed)
 		{
-			if (gSerialBridgeBusyTx) {
+			if (g_SquelchLost || SERIAL_BRIDGE_IsAnalogRx() || gSerialBridgeBusyTx) {
 				for (unsigned int i = 0; i < 4; i++)
 					(void)BK4819_ReadRegister(BK4819_REG_5F);
 				gFSKWriteIndex = 0;
@@ -733,6 +751,11 @@ static void CheckRadioInterrupts(void)
 
 void APP_EndTransmission(void)
 {
+#ifdef ENABLE_SERIAL_BRIDGE
+	if (SERIAL_BRIDGE_IsActive())
+		SERIAL_BRIDGE_HoldAfterTx();
+#endif
+
 	// back to RX mode
 	RADIO_SendEndOfTransmission();
 
@@ -883,6 +906,9 @@ void APP_Update(void)
 		&& gScanStateDir == SCAN_OFF
 		&& !gPttIsPressed
 		&& gCurrentFunction != FUNCTION_POWER_SAVE
+#ifdef ENABLE_SERIAL_BRIDGE
+		&& !SERIAL_BRIDGE_IsActive()
+#endif
 #ifdef ENABLE_VOICE
 		&& gVoiceWriteIndex == 0
 #endif
@@ -925,6 +951,9 @@ void APP_Update(void)
 			|| gScanStateDir != SCAN_OFF
 			|| gCssBackgroundScan
 			|| gScreenToDisplay != DISPLAY_MAIN
+#ifdef ENABLE_SERIAL_BRIDGE
+			|| SERIAL_BRIDGE_IsActive()
+#endif
 #ifdef ENABLE_FMRADIO
 			|| gFmRadioMode
 #endif
@@ -961,7 +990,11 @@ void APP_Update(void)
 
 			if (gEeprom.DUAL_WATCH != DUAL_WATCH_OFF &&
 			    gScanStateDir == SCAN_OFF &&
-			    !gCssBackgroundScan)
+			    !gCssBackgroundScan
+#ifdef ENABLE_SERIAL_BRIDGE
+			    && !SERIAL_BRIDGE_IsActive()
+#endif
+			)
 			{	// dual watch mode, toggle between the two VFO's
 				DualwatchAlternate();
 				goToSleep = false;
@@ -1478,7 +1511,11 @@ void APP_TimeSlice500ms(void)
 				&& !SCANNER_IsScanning()
 #endif
 			) {
+#ifdef ENABLE_SERIAL_BRIDGE
+				disp = SERIAL_BRIDGE_IsActive() ? DISPLAY_SERIAL_BRIDGE : DISPLAY_MAIN;
+#else
 				disp = DISPLAY_MAIN;
+#endif
 			}
 
 			if (disp != DISPLAY_INVALID) {
@@ -1863,7 +1900,11 @@ Skip:
 			flagSaveChannel = gRequestSaveChannel;
 
 			if (gRequestDisplayScreen == DISPLAY_INVALID)
+#ifdef ENABLE_SERIAL_BRIDGE
+				gRequestDisplayScreen = SERIAL_BRIDGE_IsActive() ? DISPLAY_SERIAL_BRIDGE : DISPLAY_MAIN;
+#else
 				gRequestDisplayScreen = DISPLAY_MAIN;
+#endif
 		}
 
 		gRequestSaveChannel = 0;
@@ -1878,7 +1919,11 @@ Skip:
 			RADIO_ConfigureChannel(gEeprom.TX_VFO, gVfoConfigureMode);
 
 		if (gRequestDisplayScreen == DISPLAY_INVALID)
+#ifdef ENABLE_SERIAL_BRIDGE
+			gRequestDisplayScreen = SERIAL_BRIDGE_IsActive() ? DISPLAY_SERIAL_BRIDGE : DISPLAY_MAIN;
+#else
 			gRequestDisplayScreen = DISPLAY_MAIN;
+#endif
 
 		gFlagReconfigureVfos = true;
 		gVfoConfigureMode    = VFO_CONFIGURE_NONE;
@@ -1929,6 +1974,11 @@ Skip:
 		AUDIO_PlaySingleVoice(false);
 		gAnotherVoiceID = VOICE_ID_INVALID;
 	}
+#endif
+
+#ifdef ENABLE_SERIAL_BRIDGE
+	if (SERIAL_BRIDGE_IsActive() && gRequestDisplayScreen == DISPLAY_MAIN)
+		gRequestDisplayScreen = DISPLAY_SERIAL_BRIDGE;
 #endif
 
 	GUI_SelectNextDisplay(gRequestDisplayScreen);

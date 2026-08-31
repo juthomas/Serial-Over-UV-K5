@@ -1,4 +1,4 @@
-/* Serial Bridge — UART <-> FSK RF tunnel for UV-K5 (egzumer-based) */
+/* Serial Bridge — UART <-> FSK RF tunnel for UV-K5 V3 (PY32F071 / F4HWN) */
 
 #ifndef APP_SERIAL_BRIDGE_H
 #define APP_SERIAL_BRIDGE_H

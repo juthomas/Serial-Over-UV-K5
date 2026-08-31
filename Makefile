@@ -453,6 +453,15 @@ else
 endif
 
 	$(SIZE) $<
+	@mkdir -p compiled-firmware
+	@if [ -f $(TARGET).packed.bin ]; then \
+		cp -f $(TARGET).packed.bin compiled-firmware/firmware.packed.bin; \
+		cp -f $(TARGET).packed.bin compiled-firmware/firmware-v1.packed.bin; \
+	fi
+	@if [ -f $(TARGET).bin ]; then \
+		cp -f $(TARGET).bin compiled-firmware/firmware.bin; \
+		cp -f $(TARGET).bin compiled-firmware/firmware-v1.bin; \
+	fi
 
 debug:
 	/opt/openocd/bin/openocd -c "bindto 0.0.0.0" -f interface/jlink.cfg -f dp32g030.cfg
@@ -476,6 +485,15 @@ bsp/dp32g030/%.h: hardware/dp32g030/%.def
 .FORCE:
 
 -include $(DEPS)
+
+.PHONY: v1 v3 all-hw
+
+v1: all
+
+v3:
+	$(TOP)/scripts/build-v3.sh
+
+all-hw: v1 v3
 
 clean:
 	$(RM) $(call FixPath, $(TARGET).bin $(TARGET).packed.bin $(TARGET) $(OBJS) $(DEPS))

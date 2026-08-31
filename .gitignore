@@ -12,3 +12,5 @@ k5_eeprom.raw
 __pycache__/
 *.pyc
 .venv/
+# F4HWN V3 tree: cloned/pinned by scripts/fetch-v3.sh (see .gitmodules)
+vendor/uv-k5-v3/

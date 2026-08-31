@@ -1,0 +1,594 @@
+diff --git a/App/CMakeLists.txt b/App/CMakeLists.txt
+index 0fdd20c..d3a560a 100644
+--- a/App/CMakeLists.txt
++++ b/App/CMakeLists.txt
+@@ -86,7 +86,7 @@ if(NOT SQL_TONE)
+ endif()
+ target_compile_definitions(App INTERFACE SQL_TONE=${SQL_TONE})
+ 
+-if(ENABLE_AIRCOPY OR ENABLE_UART OR ENABLE_USB)
++if(ENABLE_AIRCOPY OR ENABLE_UART OR ENABLE_USB OR ENABLE_SERIAL_BRIDGE)
+     target_sources(App INTERFACE 
+         driver/crc.c
+         driver/eeprom_compat.c
+@@ -126,6 +126,11 @@ enable_feature(ENABLE_AIRCOPY
+     app/aircopy.c
+     ui/aircopy.c
+ )
++enable_feature(ENABLE_SERIAL_BRIDGE
++    app/serial_bridge.c
++    ui/serial_bridge.c
++)
++enable_feature(ENABLE_ANALOG_PTT)
+ enable_feature(ENABLE_NOAA)
+ enable_feature(ENABLE_VOICE 
+     driver/voice.c
+diff --git a/App/app/action.c b/App/app/action.c
+index 97da7c5..e3eb679 100644
+--- a/App/app/action.c
++++ b/App/app/action.c
+@@ -46,7 +46,10 @@
+     #include "app/beam.h"
+ #endif
+ #ifdef ENABLE_FEAT_F4HWN_RXTX_LOG
+-    #include "app/rxtx_log.h"
++#include "app/rxtx_log.h"
++#endif
++#ifdef ENABLE_SERIAL_BRIDGE
++#include "app/serial_bridge.h"
+ #endif
+ 
+ #if defined(ENABLE_FMRADIO)
+@@ -137,6 +140,9 @@ void (*action_opt_table[])(void) = {
+ #ifdef ENABLE_FEAT_F4HWN_RXTX_LOG
+     [ACTION_OPT_RXTX_LOG] = &ACTION_RxTxLog,
+ #endif
++#ifdef ENABLE_SERIAL_BRIDGE
++    [ACTION_OPT_SERIAL_BRIDGE] = &SERIAL_BRIDGE_Start,
++#endif
+ };
+ 
+ static_assert(ARRAY_SIZE(action_opt_table) == ACTION_OPT_LEN);
+diff --git a/App/app/app.c b/App/app/app.c
+index e81e09b..ea59315 100644
+--- a/App/app/app.c
++++ b/App/app/app.c
+@@ -24,6 +24,9 @@
+ #ifdef ENABLE_AIRCOPY
+     #include "app/aircopy.h"
+ #endif
++#ifdef ENABLE_SERIAL_BRIDGE
++    #include "app/serial_bridge.h"
++#endif
+ #ifdef ENABLE_FEAT_F4HWN_BEAM
+     #include "app/beam.h"
+ #endif
+@@ -123,6 +126,10 @@ void (*ProcessKeysFunctions[])(KEY_Code_t Key, bool bKeyPressed, bool bKeyHeld)
+ #ifdef ENABLE_FEAT_F4HWN_RXTX_LOG
+     [DISPLAY_RXTX_LOG] = &RXTX_LOG_ProcessKeys,
+ #endif
++
++#ifdef ENABLE_SERIAL_BRIDGE
++    [DISPLAY_SERIAL_BRIDGE] = &SERIAL_BRIDGE_ProcessKeys,
++#endif
+ };
+ 
+ static_assert(ARRAY_SIZE(ProcessKeysFunctions) == DISPLAY_N_ELEM);
+@@ -389,6 +396,12 @@ static void HandleIncoming(void)
+     if (!g_SquelchLost) {   // squelch is closed
+ #ifdef ENABLE_DTMF_CALLING
+         if (gDTMF_RX_index > 0)
+             DTMF_clear_RX();
+ #endif
++#ifdef ENABLE_SERIAL_BRIDGE
++        if (SERIAL_BRIDGE_IsActive()) {
++            AUDIO_AudioPathOff();
++            gEnableSpeaker = false;
++        }
++#endif
+         if (gCurrentFunction != FUNCTION_FOREGROUND) {
+@@ -693,7 +706,11 @@ static void HandleFunction(void)
+ }
+ 
+ void APP_StartListening(FUNCTION_Type_t function)
+ {
+     const unsigned int vfo = gEeprom.RX_VFO;
++#ifdef ENABLE_SERIAL_BRIDGE
++    if (SERIAL_BRIDGE_IsActive())
++        SERIAL_BRIDGE_EnterAnalogRx();
++#endif
+ 
+ #ifdef ENABLE_FEAT_F4HWN_LOGO_SAV
+@@ -1009,6 +1020,26 @@ static void CheckRadioInterrupts(void)
+         }
+ #endif
+ 
++#ifdef ENABLE_SERIAL_BRIDGE
++        if (interrupts.fskFifoAlmostFull &&
++            gScreenToDisplay == DISPLAY_SERIAL_BRIDGE &&
++            gCurrentFunction != FUNCTION_TRANSMIT &&
++            !gPttIsPressed)
++        {
++            if (g_SquelchLost || SERIAL_BRIDGE_IsAnalogRx() || gSerialBridgeBusyTx) {
++                for (unsigned int i = 0; i < 4; i++)
++                    (void)BK4819_ReadRegister(BK4819_REG_5F);
++                gFSKWriteIndex = 0;
++            } else {
++                for (unsigned int i = 0; i < 4; i++) {
++                    gSerialBridgeFSKBuffer[gFSKWriteIndex++] = BK4819_ReadRegister(BK4819_REG_5F);
++                }
++
++                SERIAL_BRIDGE_StorePacket();
++            }
++        }
++#endif
++
+ #ifdef ENABLE_FEAT_F4HWN_BEAM
+         if ((interrupts.fskFifoAlmostFull || interrupts.fskRxFinied) &&
+             gBeamActive &&
+@@ -1034,3 +1054,8 @@ void APP_EndTransmission(void)
+ {
++#ifdef ENABLE_SERIAL_BRIDGE
++    if (SERIAL_BRIDGE_IsActive())
++        SERIAL_BRIDGE_HoldAfterTx();
++#endif
++
+     // back to RX mode
+     RADIO_SendEndOfTransmission();
+@@ -1275,6 +1300,9 @@ void APP_Update(void)
+         && gScanStateDir == SCAN_OFF
+         && !gPttIsPressed
+         && gCurrentFunction != FUNCTION_POWER_SAVE
++#ifdef ENABLE_SERIAL_BRIDGE
++        && !SERIAL_BRIDGE_IsActive()
++#endif
+ #ifdef ENABLE_FEAT_F4HWN_BEAM
+         && !gBeamActive
+ #endif
+@@ -1357,6 +1387,9 @@ void APP_Update(void)
+             if (gEeprom.DUAL_WATCH != DUAL_WATCH_OFF &&
+                 gScanStateDir == SCAN_OFF &&
+                 !gCssBackgroundScan
++#ifdef ENABLE_SERIAL_BRIDGE
++                && !SERIAL_BRIDGE_IsActive()
++#endif
+ #ifdef ENABLE_FEAT_F4HWN_BEAM
+                 && !gBeamActive
+ #endif
+@@ -1400,6 +1433,9 @@ void APP_Update(void)
+ #endif
+         {
+             // toggle between the two VFO's
++#ifdef ENABLE_SERIAL_BRIDGE
++            if (!SERIAL_BRIDGE_IsActive())
++#endif
+             DualwatchAlternate();
+             gPowerSave_10ms   = power_save1_10ms;
+             goToSleep = true;
+@@ -1441,9 +1477,17 @@ void CheckKeys(void)
+     const bool serialConfigInProgress = SerialConfigInProgress();
+ 
+ #ifdef ENABLE_FEAT_F4HWN
+-    const bool isPressed = GPIO_IsPttPressed() && !serialConfigInProgress;
++    const bool isPressed = GPIO_IsPttPressed() && !serialConfigInProgress
++#ifdef ENABLE_SERIAL_BRIDGE
++        && !SERIAL_BRIDGE_BlockAnalogPtt()
++#endif
++        ;
+ #else
+-    const bool isPressed = !GPIO_CheckBit(&GPIOC->DATA, GPIOC_PIN_PTT) && !serialConfigInProgress;
++    const bool isPressed = !GPIO_CheckBit(&GPIOC->DATA, GPIOC_PIN_PTT) && !serialConfigInProgress
++#ifdef ENABLE_SERIAL_BRIDGE
++        && !SERIAL_BRIDGE_BlockAnalogPtt()
++#endif
++        ;
+ #endif
+ 
+ #ifdef ENABLE_FEAT_F4HWN
+@@ -1597,6 +1641,11 @@ void APP_TimeSlice10ms(void)
+ #endif
+ 
+ #ifdef ENABLE_UART
++#ifdef ENABLE_SERIAL_BRIDGE
++    if (SERIAL_BRIDGE_IsActive()) {
++        /* Chirp/programming protocol suspended while bridging */
++    } else
++#endif
+     if (UART_IsCommandAvailable(UART_PORT_UART)) {
+         // SCHEDULER_Disable();
+         UART_HandleCommand(UART_PORT_UART);
+@@ -1782,6 +1831,11 @@ void APP_TimeSlice10ms(void)
+     }
+ #endif
+ 
++#ifdef ENABLE_SERIAL_BRIDGE
++    if (SERIAL_BRIDGE_IsActive())
++        SERIAL_BRIDGE_TimeSlice10ms();
++#endif
++
+     CheckKeys();
+ }
+ 
+@@ -2074,7 +2128,11 @@ void APP_TimeSlice500ms(void)
+                 && !SCANNER_IsScanning()
+ #endif
+             ) {
++#ifdef ENABLE_SERIAL_BRIDGE
++                disp = SERIAL_BRIDGE_IsActive() ? DISPLAY_SERIAL_BRIDGE : DISPLAY_MAIN;
++#else
+                 disp = DISPLAY_MAIN;
++#endif
+             }
+ 
+             if (disp != DISPLAY_INVALID) {
+@@ -2491,6 +2549,9 @@ static void ProcessKey(KEY_Code_t Key, bool bKeyPressed, bool bKeyHeld)
+     else if (!SCANNER_IsScanning()
+ #ifdef ENABLE_AIRCOPY
+             && gScreenToDisplay != DISPLAY_AIRCOPY
++#endif
++#ifdef ENABLE_SERIAL_BRIDGE
++            && gScreenToDisplay != DISPLAY_SERIAL_BRIDGE
+ #endif
+     ) {
+         ACTION_Handle(Key, bKeyPressed, bKeyHeld);
+@@ -2554,7 +2615,11 @@ Skip:
+             flagSaveChannel = gRequestSaveChannel;
+ 
+             if (gRequestDisplayScreen == DISPLAY_INVALID)
++#ifdef ENABLE_SERIAL_BRIDGE
++                gRequestDisplayScreen = SERIAL_BRIDGE_IsActive() ? DISPLAY_SERIAL_BRIDGE : DISPLAY_MAIN;
++#else
+                 gRequestDisplayScreen = DISPLAY_MAIN;
++#endif
+         }
+ 
+         gRequestSaveChannel = 0;
+@@ -2569,7 +2634,11 @@ Skip:
+             RADIO_ConfigureChannel(gEeprom.TX_VFO, gVfoConfigureMode);
+ 
+         if (gRequestDisplayScreen == DISPLAY_INVALID)
++#ifdef ENABLE_SERIAL_BRIDGE
++            gRequestDisplayScreen = SERIAL_BRIDGE_IsActive() ? DISPLAY_SERIAL_BRIDGE : DISPLAY_MAIN;
++#else
+             gRequestDisplayScreen = DISPLAY_MAIN;
++#endif
+ 
+         gFlagReconfigureVfos = true;
+         gVfoConfigureMode    = VFO_CONFIGURE_NONE;
+@@ -2622,6 +2691,11 @@ Skip:
+     }
+ #endif
+ 
++#ifdef ENABLE_SERIAL_BRIDGE
++    if (SERIAL_BRIDGE_IsActive() && gRequestDisplayScreen == DISPLAY_MAIN)
++        gRequestDisplayScreen = DISPLAY_SERIAL_BRIDGE;
++#endif
++
+     GUI_SelectNextDisplay(gRequestDisplayScreen);
+     gRequestDisplayScreen = DISPLAY_INVALID;
+ 
+diff --git a/App/app/generic.c b/App/app/generic.c
+index f6c907a..977242a 100644
+--- a/App/app/generic.c
++++ b/App/app/generic.c
+@@ -27,6 +27,9 @@
+ #include "app/generic.h"
+ #include "app/menu.h"
+ #include "app/scanner.h"
++#ifdef ENABLE_SERIAL_BRIDGE
++#include "app/serial_bridge.h"
++#endif
+ #include "audio.h"
+ #include "driver/keyboard.h"
+ #include "dtmf.h"
+@@ -100,6 +103,14 @@ void GENERIC_Key_PTT(bool bKeyPressed)
+ {
+     gInputBoxIndex = 0;
+ 
++#ifdef ENABLE_SERIAL_BRIDGE
++    if (SERIAL_BRIDGE_BlockAnalogPtt()) {
++        if (gCurrentFunction == FUNCTION_TRANSMIT)
++            APP_HandleEndTransmission();
++        return;
++    }
++#endif
++
+     if (!bKeyPressed || SerialConfigInProgress())
+     {   // PTT released
+         if (gCurrentFunction == FUNCTION_TRANSMIT) {    
+@@ -110,7 +121,11 @@ void GENERIC_Key_PTT(bool bKeyPressed)
+ #endif
+             RADIO_SetVfoState(VFO_STATE_NORMAL);
+ 
+-            if (gScreenToDisplay != DISPLAY_MENU)     // 1of11 .. don't close the menu
++            if (gScreenToDisplay != DISPLAY_MENU     // 1of11 .. don't close the menu
++#ifdef ENABLE_SERIAL_BRIDGE
++                && gScreenToDisplay != DISPLAY_SERIAL_BRIDGE
++#endif
++            )
+                 gRequestDisplayScreen = DISPLAY_MAIN;
+         }
+ 
+@@ -153,7 +168,11 @@ void GENERIC_Key_PTT(bool bKeyPressed)
+         return;
+     }
+ 
+-    if (gScreenToDisplay != DISPLAY_MENU)     // 1of11 .. don't close the menu
++    if (gScreenToDisplay != DISPLAY_MENU     // 1of11 .. don't close the menu
++#ifdef ENABLE_SERIAL_BRIDGE
++        && gScreenToDisplay != DISPLAY_SERIAL_BRIDGE
++#endif
++    )
+         gRequestDisplayScreen = DISPLAY_MAIN;
+ 
+ 
+@@ -202,6 +221,9 @@ done:
+     if (gScreenToDisplay != DISPLAY_MENU
+ #ifdef ENABLE_FMRADIO
+         && gRequestDisplayScreen != DISPLAY_FM
++#endif
++#ifdef ENABLE_SERIAL_BRIDGE
++        && gScreenToDisplay != DISPLAY_SERIAL_BRIDGE
+ #endif
+     ) {
+         // 1of11 .. don't close the menu
+diff --git a/App/functions.c b/App/functions.c
+index 32be404..34fda03 100644
+--- a/App/functions.c
++++ b/App/functions.c
+@@ -37,6 +37,9 @@
+     #include "app/rxtx_log.h"
+ #endif
+ #include "misc.h"
++#ifdef ENABLE_SERIAL_BRIDGE
++    #include "app/serial_bridge.h"
++#endif
+ #include "radio.h"
+ #include "settings.h"
+ #include "ui/status.h"
+@@ -144,6 +147,10 @@ void FUNCTION_PowerSave() {
+ 
+ void FUNCTION_Transmit()
+ {
++#ifdef ENABLE_SERIAL_BRIDGE
++    SERIAL_BRIDGE_LeaveFsk();
++#endif
++
+     // if DTMF is enabled when TX'ing, it changes the TX audio filtering !! .. 1of11
+     BK4819_DisableDTMF();
+ 
+diff --git a/App/helper/boot.c b/App/helper/boot.c
+index 838cfb1..5e05541 100644
+--- a/App/helper/boot.c
++++ b/App/helper/boot.c
+@@ -125,5 +125,16 @@ void BOOT_ProcessMode(BOOT_Mode_t Mode)
+         }
+     #endif
+ 
++#ifdef ENABLE_SERIAL_BRIDGE
++    /* Do not auto-enter SER BRIDGE: a hang there left the F4HWN splash
++     * frozen and killed the keypad. F1 short opens the bridge this session. */
++    if (Mode == BOOT_MODE_NORMAL)
++        gEeprom.KEY_1_SHORT_PRESS_ACTION = ACTION_OPT_SERIAL_BRIDGE;
++#endif
++
+     GUI_SelectNextDisplay(display);
++#ifdef ENABLE_SERIAL_BRIDGE
++    GUI_DisplayScreen();
++    gUpdateStatus = true;
++#endif
+ }
+diff --git a/App/main.c b/App/main.c
+index a80d20a..879fa4b 100644
+--- a/App/main.c
++++ b/App/main.c
+@@ -60,6 +60,9 @@
+ #endif
+ #include "helper/battery.h"
+ #include "helper/boot.h"
++#ifdef ENABLE_SERIAL_BRIDGE
++    #include "app/serial_bridge.h"
++#endif
+ 
+ #include "ui/lock.h"
+ #include "ui/welcome.h"
+@@ -210,6 +213,19 @@ void Main(void)
+     }
+     else
+     {
++#ifdef ENABLE_SERIAL_BRIDGE
++        /* Skip the F4HWN "VOLTAGE" splash entirely. */
++        BACKLIGHT_TurnOn();
++        BOOT_ProcessMode(BootMode);
++
++        if (gEeprom.AUTO_KEYPAD_LOCK && !gEeprom.KEY_LOCK)
++            gKeyLockCountdown = gEeprom.AUTO_KEYPAD_LOCK * 30;
++
++        gUpdateStatus = true;
++#ifdef ENABLE_NOAA
++        RADIO_ConfigureNOAA();
++#endif
++#else
+         UI_DisplayWelcome();
+ 
+         BACKLIGHT_TurnOn();
+@@ -255,8 +271,6 @@ void Main(void)
+         if (gEeprom.AUTO_KEYPAD_LOCK && !gEeprom.KEY_LOCK)
+             gKeyLockCountdown = gEeprom.AUTO_KEYPAD_LOCK * 30; // 15 seconds step
+ 
+-        // GPIO_ClearBit(&GPIOA->DATA, GPIOA_PIN_VOICE_0);
+-
+         gUpdateStatus = true;
+ 
+ #ifdef ENABLE_VOICE
+@@ -281,9 +295,14 @@ void Main(void)
+ #ifdef ENABLE_NOAA
+         RADIO_ConfigureNOAA();
+ #endif
++#endif /* ENABLE_SERIAL_BRIDGE */
+     }
+ 
+     #ifdef ENABLE_FEAT_F4HWN_RESUME_STATE
++#ifdef ENABLE_SERIAL_BRIDGE
++    if (!SERIAL_BRIDGE_IsActive())
++#endif
++    {
+         if (gEeprom.CURRENT_STATE == 2 || gEeprom.CURRENT_STATE == 5)
+             CHFRSCANNER_ScanRange();
+ 
+@@ -315,6 +334,7 @@ void Main(void)
+                 // No action for CURRENT_STATE == 0 or other unexpected values
+                 break;
+         }
++    }
+     #endif
+         
+     while (true) {
+diff --git a/App/radio.c b/App/radio.c
+index d1cc3cd..d6dae8a 100644
+--- a/App/radio.c
++++ b/App/radio.c
+@@ -23,7 +23,10 @@
+     #include "app/rxtx_log.h"
+ #endif
+ #ifdef ENABLE_FMRADIO
+-    #include "app/fm.h"
++#include "app/fm.h"
++#endif
++#ifdef ENABLE_SERIAL_BRIDGE
++#include "app/serial_bridge.h"
+ #endif
+ #include "audio.h"
+ #include "dcs.h"
+@@ -922,6 +925,13 @@ void RADIO_SetupRegisters(bool switchToForeground)
+ 
+     if (switchToForeground)
+         FUNCTION_Select(FUNCTION_FOREGROUND);
++
++#ifdef ENABLE_SERIAL_BRIDGE
++    if (SERIAL_BRIDGE_IsActive()
++        && gCurrentFunction != FUNCTION_TRANSMIT
++        && !gPttIsPressed)
++        SERIAL_BRIDGE_ReArm();
++#endif
+ }
+ 
+ #ifdef ENABLE_NOAA
+diff --git a/App/settings.h b/App/settings.h
+index 1f0153f..f0b2972 100644
+--- a/App/settings.h
++++ b/App/settings.h
+@@ -132,6 +132,9 @@ enum ACTION_OPT_t {
+ #endif
+ #ifdef ENABLE_FEAT_F4HWN_RXTX_LOG
+     ACTION_OPT_RXTX_LOG,
++#endif
++#ifdef ENABLE_SERIAL_BRIDGE
++    ACTION_OPT_SERIAL_BRIDGE,
+ #endif
+     ACTION_OPT_LEN
+ };
+diff --git a/App/ui/menu.c b/App/ui/menu.c
+index 65975b1..ff4af34 100644
+--- a/App/ui/menu.c
++++ b/App/ui/menu.c
+@@ -526,6 +526,9 @@ const t_sidefunction gSubMenu_SIDEFUNCTIONS[] =
+         {"RF LOG",          ACTION_OPT_RXTX_LOG},
+     #endif
+ #endif
++#ifdef ENABLE_SERIAL_BRIDGE
++    {"SER\nBRIDGE",      ACTION_OPT_SERIAL_BRIDGE},
++#endif
+ };
+ 
+ const uint8_t gSubMenu_SIDEFUNCTIONS_size = ARRAY_SIZE(gSubMenu_SIDEFUNCTIONS);
+diff --git a/App/ui/ui.c b/App/ui/ui.c
+index 116fa96..d8a0fd2 100644
+--- a/App/ui/ui.c
++++ b/App/ui/ui.c
+@@ -33,6 +33,9 @@
+ #ifdef ENABLE_FEAT_F4HWN_RXTX_LOG
+     #include "app/rxtx_log.h"
+ #endif
++#ifdef ENABLE_SERIAL_BRIDGE
++    #include "ui/serial_bridge.h"
++#endif
+ #include "ui/inputbox.h"
+ #include "ui/main.h"
+ #include "ui/menu.h"
+@@ -64,6 +67,10 @@ void (*UI_DisplayFunctions[])(void) = {
+ #ifdef ENABLE_FEAT_F4HWN_RXTX_LOG
+     [DISPLAY_RXTX_LOG] = &UI_DisplayRxTxLog,
+ #endif
++
++#ifdef ENABLE_SERIAL_BRIDGE
++    [DISPLAY_SERIAL_BRIDGE] = &UI_DisplaySerialBridge,
++#endif
+ };
+ 
+ static_assert(ARRAY_SIZE(UI_DisplayFunctions) == DISPLAY_N_ELEM);
+diff --git a/App/ui/ui.h b/App/ui/ui.h
+index 94b1ede..adf78c7 100644
+--- a/App/ui/ui.h
++++ b/App/ui/ui.h
+@@ -38,6 +38,10 @@ enum GUI_DisplayType_t
+     DISPLAY_RXTX_LOG,
+ #endif
+ 
++#ifdef ENABLE_SERIAL_BRIDGE
++    DISPLAY_SERIAL_BRIDGE,
++#endif
++
+     DISPLAY_N_ELEM,
+     DISPLAY_INVALID = 0xFFu
+ };
+diff --git a/CMakePresets.json b/CMakePresets.json
+index 960fed0..ad734da 100644
+--- a/CMakePresets.json
++++ b/CMakePresets.json
+@@ -217,6 +217,34 @@
+                 "EDITION_STRING": "Fusion",
+                 "TARGET": "f4hwn.fusion"
+             }
++        },
++        {
++            "name": "SerialBridge",
++            "inherits": "default",
++            "cacheVariables": {
++                "ENABLE_SERIAL_BRIDGE": true,
++                "ENABLE_ANALOG_PTT": false,
++                "ENABLE_UART": true,
++                "ENABLE_USB": false,
++                "ENABLE_VOX": false,
++                "ENABLE_TX1750": false,
++                "ENABLE_SPECTRUM": false,
++                "ENABLE_AUDIO_BAR": false,
++                "ENABLE_FEAT_F4HWN_SPECTRUM": false,
++                "ENABLE_FEAT_F4HWN_AUDIO_SCOPE": false,
++                "ENABLE_FEAT_F4HWN_GAME": false,
++                "ENABLE_FEAT_F4HWN_K5VIEWER": false,
++                "ENABLE_FEAT_F4HWN_BEAM": false,
++                "ENABLE_FEAT_F4HWN_RXTX_LOG": false,
++                "ENABLE_FEAT_F4HWN_QRCODE": false,
++                "ENABLE_FEAT_F4HWN_MEM": false,
++                "ENABLE_FEAT_F4HWN_LOGO": false,
++                "ENABLE_FEAT_F4HWN_LOGO_SAV": false,
++                "ENABLE_FEAT_F4HWN_RESUME_STATE": false,
++                "ENABLE_FEAT_F4HWN_SLEEP": false,
++                "EDITION_STRING": "SerialBridge",
++                "TARGET": "firmware-v3"
++            }
+         }
+     ],
+     "buildPresets": [
+@@ -247,6 +275,10 @@
+         {
+             "name": "Fusion",
+             "configurePreset": "Fusion"
++        },
++        {
++            "name": "SerialBridge",
++            "configurePreset": "SerialBridge"
+         }
+     ]
+ }
